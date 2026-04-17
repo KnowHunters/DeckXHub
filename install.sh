@@ -110,6 +110,26 @@ COMPOSE_CMD=""
 # Utility Functions
 # ==============================================================================
 
+# Print a box row: │  content ...padding... │
+# Usage: box_row "visible text" [width]  (default width=57)
+# Handles ANSI codes and CJK double-width chars correctly.
+box_row() {
+    local raw="$1"
+    local width="${2:-57}"
+    # Strip ANSI escape sequences to get visible text
+    local stripped
+    stripped=$(echo -e "$raw" | sed 's/\x1b\[[0-9;]*m//g')
+    # Calculate visible width using wc -L (handles CJK double-width)
+    local vw
+    vw=$(echo -n "$stripped" | wc -L 2>/dev/null || echo ${#stripped})
+    vw=$((vw + 0))  # ensure numeric
+    local pad=$((width - vw))
+    [ "$pad" -lt 0 ] && pad=0
+    local spaces=""
+    for (( j=0; j<pad; j++ )); do spaces+=" "; done
+    echo -e "${CYAN}│${NC}${raw}${spaces}${CYAN}│${NC}"
+}
+
 sed_inplace() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         sed -i '' "$@"
@@ -554,20 +574,20 @@ docker_install_core() {
     # Configuration confirmation summary
     echo ""
     echo -e "${CYAN}┌─────────────────────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│  Configuration Summary / 配置摘要                       │${NC}"
+    box_row "  Configuration Summary / 配置摘要"
     echo -e "${CYAN}├─────────────────────────────────────────────────────────┤${NC}"
-    echo -e "${CYAN}│  Mode / 模式:     ${BOLD}${DP_NAME}${NC}"
-    echo -e "${CYAN}│  Instance / 实例: ${BOLD}${instance_name}${NC}"
-    echo -e "${CYAN}│  Image / 镜像:    ${BOLD}${DP_IMAGE}${NC}"
-    echo -e "${CYAN}│  Compose file:    ${BOLD}${compose_file}${NC}"
+    box_row "  Mode / 模式:     ${BOLD}${DP_NAME}${NC}"
+    box_row "  Instance / 实例: ${BOLD}${instance_name}${NC}"
+    box_row "  Image / 镜像:    ${BOLD}${DP_IMAGE}${NC}"
+    box_row "  Compose file:    ${BOLD}${compose_file}${NC}"
     idx=0
     for hp in "${host_ports[@]}"; do
         local label="${DP_PORT_LABELS[$idx]}"
-        echo -e "${CYAN}│  ${label} port:${NC}    ${BOLD}${hp}${NC}"
+        box_row "  ${label} port:    ${BOLD}${hp}${NC}"
         idx=$((idx + 1))
     done
     if [ "$NEED_MIRROR" = true ]; then
-        echo -e "${CYAN}│  Mirror / 加速:   ${BOLD}${DOCKER_MIRROR}${NC}"
+        box_row "  Mirror / 加速:   ${BOLD}${DOCKER_MIRROR}${NC}"
     fi
     echo -e "${CYAN}└─────────────────────────────────────────────────────────┘${NC}"
     echo ""
