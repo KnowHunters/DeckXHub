@@ -628,9 +628,9 @@ docker_install_core() {
 
     # Wait for health check
     echo ""
-    echo -e "${CYAN}Waiting for services to become ready (first boot may take ~2 min)..."
-    echo -e "等待服务就绪（首次启动可能需要约 2 分钟）...${NC}"
-    local max_wait=150 waited=0
+    echo -e "${CYAN}Waiting for services to become ready (first boot may take ~5 min)..."
+    echo -e "等待服务就绪（首次启动可能需要约 5 分钟）...${NC}"
+    local max_wait=300 waited=0
     while [ $waited -lt $max_wait ]; do
         local any_ok=false
         for hp in "${host_ports[@]}"; do
@@ -684,35 +684,51 @@ docker_install_core() {
     echo ""
 
     # First-time login: extract auto-generated credentials from container logs
-    local cred_lines
-    cred_lines=$(docker logs "$instance_name" 2>&1 | grep '\[CREDENTIALS\]' || true)
-    if [ -n "$cred_lines" ]; then
+    # Each product (ClawDeckX / HermesDeckX) outputs its own block:
+    #   |   Username: admin   |
+    #   |   Password: XYZ     |
+    # There may be duplicate Chinese lines (用户名/密码) — we only extract English lines.
+    local all_logs cred_found=false
+    all_logs=$(docker logs "$instance_name" 2>&1 || true)
+
+    # Extract unique Username/Password pairs (skip 用户名/密码 duplicates)
+    local users=() passes=()
+    while IFS= read -r line; do
+        local val
+        val=$(echo "$line" | sed 's/.*Username:[[:space:]]*//' | sed 's/[[:space:]]*|.*//')
+        [ -n "$val" ] && users+=("$val")
+    done < <(echo "$all_logs" | grep '   Username:' || true)
+    while IFS= read -r line; do
+        local val
+        val=$(echo "$line" | sed 's/.*Password:[[:space:]]*//' | sed 's/[[:space:]]*|.*//')
+        [ -n "$val" ] && passes+=("$val")
+    done < <(echo "$all_logs" | grep '   Password:' || true)
+
+    if [ ${#users[@]} -gt 0 ] && [ ${#passes[@]} -gt 0 ]; then
+        cred_found=true
         echo -e "${YELLOW}🔐 Admin credentials (auto-generated on first boot)：${NC}"
         echo -e "${YELLOW}   管理员账号（首次启动时自动生成）：${NC}"
         echo ""
-        echo "$cred_lines" | while IFS= read -r line; do
-            # Extract product, field, value from lines like:
-            # [DeckXHub] [CREDENTIALS] ClawDeckX Username: admin
-            local product field value
-            if echo "$line" | grep -q "Username:"; then
-                product=$(echo "$line" | sed 's/.*\[CREDENTIALS\] \([^ ]*\) Username:.*/\1/')
-                value=$(echo "$line" | sed 's/.*Username: //')
-                echo -e "  ${CYAN}${product}${NC}"
-                echo -e "    Username / 用户名: ${BOLD}${value}${NC}"
-            elif echo "$line" | grep -q "Password:"; then
-                value=$(echo "$line" | sed 's/.*Password: //')
-                echo -e "    Password / 密码:   ${BOLD}${value}${NC}"
-                echo ""
-            fi
+        # Show each product's credentials
+        local labels=("ClawDeckX" "HermesDeckX")
+        for i in "${!users[@]}"; do
+            local label="${labels[$i]:-Service$((i+1))}"
+            echo -e "  ${CYAN}${label}${NC}"
+            echo -e "    Username / 用户名: ${BOLD}${users[$i]}${NC}"
+            echo -e "    Password / 密码:   ${BOLD}${passes[$i]}${NC}"
+            echo ""
         done
         echo -e "  ${RED}⚠ Save these credentials! They are only shown once.${NC}"
         echo -e "  ${RED}⚠ 请保存以上凭据！仅在首次部署时显示。${NC}"
-    else
-        echo -e "${YELLOW}🔐 First-time setup / 首次设置：${NC}"
-        echo -e "  Open the URL above in your browser."
-        echo -e "  在浏览器中打开上方地址。"
-        echo -e "  A Setup Wizard will guide you to create an admin account."
-        echo -e "  设置向导将引导您创建管理员账号。"
+        echo -e "  ${RED}⚠ Change password after login: Settings → Account Security${NC}"
+        echo -e "  ${RED}⚠ 登录后请立即修改密码：系统设置 → 账户安全${NC}"
+    fi
+
+    if [ "$cred_found" = false ]; then
+        echo -e "${YELLOW}🔐 First-time login / 首次登录：${NC}"
+        echo -e "  View initial admin credentials in container logs:"
+        echo -e "  查看容器日志中的初始管理员账户信息："
+        echo -e "  ${GREEN}docker logs $instance_name 2>&1 | grep -A1 Username${NC}"
     fi
     echo ""
 

@@ -23,10 +23,6 @@ write_bootstrap() {
     echo "$value" > "$dir/$key"
 }
 
-# --- Helper: generate random password (alphanumeric, 16 chars) ---
-generate_password() {
-    head -c 24 /dev/urandom | base64 | tr -d '/+=\n' | head -c 16
-}
 
 # --- Ensure data directories ---
 ensure_dirs() {
@@ -184,28 +180,12 @@ start_clawdeckx() {
 
     local port="${OCD_PORT:-18788}"
     local bind="${OCD_BIND:-0.0.0.0}"
-    local init_args=""
-
-    # First boot: generate admin credentials
-    local cred_flag="/data/clawdeckx/.credentials-created"
-    if [ ! -f "$cred_flag" ]; then
-        local admin_user="admin"
-        local admin_pass
-        admin_pass=$(generate_password)
-        init_args="--user $admin_user --password $admin_pass"
-        mkdir -p /data/clawdeckx
-        echo "$admin_user" > "$cred_flag"
-        echo "[DeckXHub] [CREDENTIALS] ClawDeckX admin account created:"
-        echo "[DeckXHub] [CREDENTIALS] ClawDeckX Username: $admin_user"
-        echo "[DeckXHub] [CREDENTIALS] ClawDeckX Password: $admin_pass"
-    fi
 
     write_bootstrap "clawdeckx" "status" "starting"
 
-    $bin \
+    "$bin" \
         --port "$port" \
-        --host "$bind" \
-        $init_args &
+        --host "$bind" &
     local pid=$!
     echo "[DeckXHub] ClawDeckX started (PID $pid, port $port)"
     write_bootstrap "clawdeckx" "pid" "$pid"
@@ -230,28 +210,12 @@ start_hermesdeckx() {
 
     local port="${OHD_PORT:-19788}"
     local bind="${OHD_BIND:-0.0.0.0}"
-    local init_args=""
-
-    # First boot: generate admin credentials
-    local cred_flag="/data/hermesdeckx/.credentials-created"
-    if [ ! -f "$cred_flag" ]; then
-        local admin_user="admin"
-        local admin_pass
-        admin_pass=$(generate_password)
-        init_args="--user $admin_user --password $admin_pass"
-        mkdir -p /data/hermesdeckx
-        echo "$admin_user" > "$cred_flag"
-        echo "[DeckXHub] [CREDENTIALS] HermesDeckX admin account created:"
-        echo "[DeckXHub] [CREDENTIALS] HermesDeckX Username: $admin_user"
-        echo "[DeckXHub] [CREDENTIALS] HermesDeckX Password: $admin_pass"
-    fi
 
     write_bootstrap "hermesdeckx" "status" "starting"
 
-    $bin \
+    "$bin" \
         --port "$port" \
-        --host "$bind" \
-        $init_args &
+        --host "$bind" &
     local pid=$!
     echo "[DeckXHub] HermesDeckX started (PID $pid, port $port)"
     write_bootstrap "hermesdeckx" "pid" "$pid"
