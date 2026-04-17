@@ -14,139 +14,74 @@ env:
   IMAGE_NAME: knowhunters/deckxhub
 
 jobs:
-  # ============================================================================
-  # Job 1: Build ClawDeckX binaries (multi-platform)
-  # ============================================================================
-  build-clawdeckx:
+  fetch-upstream-assets:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
     steps:
-      - name: Checkout DeckXHub
-        uses: actions/checkout@v4
-
-      - name: Checkout ClawDeckX
-        uses: actions/checkout@v4
-        with:
-          repository: ClawDeckX/ClawDeckX
-          path: clawdeckx-src
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-
-      - name: Build ClawDeckX frontend
-        working-directory: clawdeckx-src/web
-        run: npm ci && npm run build
-
-      - name: Build ClawDeckX backend
-        working-directory: clawdeckx-src
+      - name: Resolve latest upstream tags
         env:
-          CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          COMPAT=$(grep -o '"openclawCompat"[[:space:]]*:[[:space:]]*"[^"]*"' web/package.json | cut -d'"' -f4)
-          go build \
-            -ldflags="-s -w -X ClawDeckX/internal/version.Version=${VERSION} -X 'ClawDeckX/internal/version.OpenClawCompat=${COMPAT}'" \
-            -o ../clawdeckx-${{ matrix.goos }}-${{ matrix.goarch }} \
-            ./cmd/clawdeckx
+          CLAW_TAG=$(gh release view --repo ClawDeckX/ClawDeckX --json tagName --jq .tagName)
+          HERMES_TAG=$(gh release view --repo HermesDeckX/HermesDeckX --json tagName --jq .tagName)
+          echo "CLAW_TAG=$CLAW_TAG" >> "$GITHUB_ENV"
+          echo "HERMES_TAG=$HERMES_TAG" >> "$GITHUB_ENV"
+          echo "ClawDeckX latest: $CLAW_TAG"
+          echo "HermesDeckX latest: $HERMES_TAG"
 
-      - name: Upload artifact
+      - name: Download ClawDeckX release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p upstream-assets/clawdeckx
+          gh release download "$CLAW_TAG" \
+            --repo ClawDeckX/ClawDeckX \
+            --dir upstream-assets/clawdeckx \
+            --pattern "clawdeckx-darwin-amd64" \
+            --pattern "clawdeckx-darwin-arm64" \
+            --pattern "clawdeckx-linux-amd64" \
+            --pattern "clawdeckx-linux-arm64" \
+            --pattern "clawdeckx-windows-amd64.exe"
+          ls -la upstream-assets/clawdeckx
+
+      - name: Download HermesDeckX release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p upstream-assets/hermesdeckx
+          gh release download "$HERMES_TAG" \
+            --repo HermesDeckX/HermesDeckX \
+            --dir upstream-assets/hermesdeckx \
+            --pattern "hermesdeckx-darwin-amd64" \
+            --pattern "hermesdeckx-darwin-arm64" \
+            --pattern "hermesdeckx-linux-amd64" \
+            --pattern "hermesdeckx-linux-arm64" \
+            --pattern "hermesdeckx-windows-amd64.exe"
+          ls -la upstream-assets/hermesdeckx
+
+      - name: Upload upstream assets artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clawdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: clawdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: upstream-assets
+          path: upstream-assets
 
-  # ============================================================================
-  # Job 2: Build HermesDeckX binaries (multi-platform)
-  # ============================================================================
-  build-hermesdeckx:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-    steps:
-      - name: Checkout DeckXHub
-        uses: actions/checkout@v4
-
-      - name: Checkout HermesDeckX
-        uses: actions/checkout@v4
-        with:
-          repository: HermesDeckX/HermesDeckX
-          path: hermesdeckx-src
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-
-      - name: Build HermesDeckX frontend
-        working-directory: hermesdeckx-src/web
-        run: npm ci && npm run build
-
-      - name: Build HermesDeckX backend
-        working-directory: hermesdeckx-src
-        env:
-          CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          COMPAT=$(grep -o '"hermesagentCompat"[[:space:]]*:[[:space:]]*"[^"]*"' web/package.json | cut -d'"' -f4)
-          go build \
-            -ldflags="-s -w -X HermesDeckX/internal/version.Version=${VERSION} -X 'HermesDeckX/internal/version.HermesAgentCompat=${COMPAT}'" \
-            -o ../hermesdeckx-${{ matrix.goos }}-${{ matrix.goarch }} \
-            ./cmd/hermesdeckx
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: hermesdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: hermesdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
-
-  # ============================================================================
-  # Job 3: Create GitHub Release
-  # ============================================================================
   release:
-    needs: [build-clawdeckx, build-hermesdeckx]
+    needs: fetch-upstream-assets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download upstream assets
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: upstream-assets
+          path: upstream-assets
 
       - name: Prepare release assets
         run: |
           mkdir -p release
-          for dir in artifacts/*/; do
-            cp "$dir"/* release/ 2>/dev/null || true
-          done
+          cp upstream-assets/clawdeckx/* release/
+          cp upstream-assets/hermesdeckx/* release/
           ls -la release/
 
       - name: Create Release
@@ -157,49 +92,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ============================================================================
-  # Job 4: Build & Push Docker image (multi-arch)
-  # ============================================================================
   docker:
-    needs: [build-clawdeckx, build-hermesdeckx]
+    needs: fetch-upstream-assets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download ClawDeckX linux-amd64
+      - name: Download upstream assets
         uses: actions/download-artifact@v4
         with:
-          name: clawdeckx-linux-amd64
-          path: dist-amd64
+          name: upstream-assets
+          path: upstream-assets
 
-      - name: Download HermesDeckX linux-amd64
-        uses: actions/download-artifact@v4
-        with:
-          name: hermesdeckx-linux-amd64
-          path: dist-amd64
-
-      - name: Download ClawDeckX linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: clawdeckx-linux-arm64
-          path: dist-arm64
-
-      - name: Download HermesDeckX linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: hermesdeckx-linux-arm64
-          path: dist-arm64
-
-      - name: Prepare binaries
+      - name: Prepare binaries for Docker build
         run: |
-          # amd64
-          mv dist-amd64/clawdeckx-linux-amd64 dist-amd64/clawdeckx
-          mv dist-amd64/hermesdeckx-linux-amd64 dist-amd64/hermesdeckx
+          mkdir -p dist-amd64 dist-arm64
+          cp upstream-assets/clawdeckx/clawdeckx-linux-amd64 dist-amd64/clawdeckx
+          cp upstream-assets/hermesdeckx/hermesdeckx-linux-amd64 dist-amd64/hermesdeckx
+          cp upstream-assets/clawdeckx/clawdeckx-linux-arm64 dist-arm64/clawdeckx
+          cp upstream-assets/hermesdeckx/hermesdeckx-linux-arm64 dist-arm64/hermesdeckx
           chmod +x dist-amd64/clawdeckx dist-amd64/hermesdeckx
-          # arm64
-          mv dist-arm64/clawdeckx-linux-arm64 dist-arm64/clawdeckx
-          mv dist-arm64/hermesdeckx-linux-arm64 dist-arm64/hermesdeckx
           chmod +x dist-arm64/clawdeckx dist-arm64/hermesdeckx
 
       - name: Set up QEMU
@@ -214,15 +127,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker metadata
+      - name: Build metadata
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+        run: |
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Build & push (amd64)
         uses: docker/build-push-action@v6
@@ -237,7 +145,7 @@ jobs:
             HERMESDECKX_BINARY=dist-amd64/hermesdeckx
             BUILD_VERSION=${{ github.ref_name }}
             BUILD_REVISION=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
 
       - name: Build & push (arm64)
         uses: docker/build-push-action@v6
@@ -252,7 +160,7 @@ jobs:
             HERMESDECKX_BINARY=dist-arm64/hermesdeckx
             BUILD_VERSION=${{ github.ref_name }}
             BUILD_REVISION=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
 
       - name: Create multi-arch manifest
         run: |
@@ -264,16 +172,10 @@ jobs:
             ${{ env.IMAGE_NAME }}:${TAG}-amd64 \
             ${{ env.IMAGE_NAME }}:${TAG}-arm64
 
-  # ============================================================================
-  # Job 5: Smoke test
-  # ============================================================================
   smoke-test:
     needs: docker
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Test ClawDeckX mode
         run: |
           docker run -d --name test-clawdeckx \
