@@ -14,6 +14,15 @@ set -e
 #   3) All four components          → knowhunters/deckxhub     (unified image)
 # ==============================================================================
 
+# Save script to temp file for reliable re-exec (curl|bash sets $0 to "bash")
+SELF_SCRIPT="${BASH_SOURCE[0]:-}"
+if [ -z "$SELF_SCRIPT" ] || [ "$SELF_SCRIPT" = "bash" ] || [ "$SELF_SCRIPT" = "/bin/bash" ] || [ ! -f "$SELF_SCRIPT" ]; then
+    SELF_SCRIPT="/tmp/.deckxhub-installer.sh"
+    if [ ! -f "$SELF_SCRIPT" ]; then
+        curl -fsSL "https://raw.githubusercontent.com/KnowHunters/DeckXHub/main/install.sh" -o "$SELF_SCRIPT" 2>/dev/null || true
+    fi
+fi
+
 # ==============================================================================
 # Colors
 # ==============================================================================
@@ -305,97 +314,192 @@ revert_image_mirror() {
 # ==============================================================================
 # Detect existing Docker deployments
 # ==============================================================================
-# Scans for running containers and compose files from all three profiles
+# Scans for running/stopped containers and compose files (including custom-named)
 detect_deployments() {
     DETECTED_DEPLOYMENTS=()
     DETECTED_COMPOSE_FILES=()
 
-    # Check running Docker containers
+    # Check Docker containers (running + stopped) matching our images
     if check_docker 2>/dev/null; then
-        for cname in clawdeckx hermesdeckx deckxhub; do
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$cname"; then
-                DETECTED_DEPLOYMENTS+=("$cname")
-            fi
+        local all_containers
+        all_containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null || true)
+        for cname in $all_containers; do
+            local cimg
+            cimg=$(docker inspect --format='{{.Config.Image}}' "$cname" 2>/dev/null || true)
+            case "$cimg" in
+                *knowhunters/clawdeckx*|*knowhunters/hermesdeckx*|*knowhunters/deckxhub*)
+                    DETECTED_DEPLOYMENTS+=("$cname")
+                    ;;
+            esac
         done
     fi
 
-    # Check local compose files
-    for cf in docker-compose.yml docker-compose-clawdeckx.yml docker-compose-hermesdeckx.yml; do
+    # Check local compose files (default + custom-named)
+    for cf in docker-compose.yml docker-compose-clawdeckx.yml docker-compose-hermesdeckx.yml docker-compose-*.yml; do
         if [ -f "$cf" ]; then
-            DETECTED_COMPOSE_FILES+=("$cf")
+            # Avoid duplicates
+            local dup=false
+            for existing in "${DETECTED_COMPOSE_FILES[@]}"; do
+                if [ "$existing" = "$cf" ]; then dup=true; break; fi
+            done
+            if [ "$dup" = false ]; then
+                DETECTED_COMPOSE_FILES+=("$cf")
+            fi
         fi
     done
 }
 
 # ==============================================================================
-# Docker Install — core function for all three modes
+# Docker Install — prompt for instance name, then call docker_install_core
 # ==============================================================================
 docker_install() {
     local mode="$1"
     set_deploy_profile "$mode"
 
+    # Auto-detect next available instance name
+    local default_name="$DP_CONTAINER"
+    if [ -f "$DP_COMPOSE_FILE" ] || docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$default_name"; then
+        local n=2
+        while [ -f "docker-compose-${default_name}-${n}.yml" ] || docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${default_name}-${n}"; do
+            n=$((n + 1))
+        done
+        default_name="${DP_CONTAINER}-${n}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}Each deployment needs a unique instance name."
+    echo -e "每个部署需要一个唯一的实例名称。${NC}"
+    echo ""
+    echo -e "Suggested: ${GREEN}${default_name}${NC}"
+    echo -e "Examples: ${DP_CONTAINER}-2, ${DP_CONTAINER}-dev, ${DP_CONTAINER}-test"
+    echo ""
+    echo -n "Instance name / 实例名称 [${default_name}]: "
+    read -r INSTANCE_NAME </dev/tty
+    INSTANCE_NAME="${INSTANCE_NAME:-$default_name}"
+    # Sanitize: lowercase, replace spaces with hyphens, remove invalid chars
+    INSTANCE_NAME=$(echo "$INSTANCE_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9_-]//g')
+    if [ -z "$INSTANCE_NAME" ]; then INSTANCE_NAME="$default_name"; fi
+
+    # Check if this instance name is already in use
+    local check_file="$DP_COMPOSE_FILE"
+    if [ "$INSTANCE_NAME" != "$DP_CONTAINER" ]; then
+        check_file="docker-compose-${INSTANCE_NAME}.yml"
+    fi
+    if [ -f "$check_file" ]; then
+        echo -e "${YELLOW}⚠ Instance '$INSTANCE_NAME' already exists ($check_file)."
+        echo -e "  实例 '$INSTANCE_NAME' 已存在 ($check_file)${NC}"
+        echo -n "Continue anyway? (will overwrite) / 继续？（将覆盖） [y/N] "
+        read -n 1 -r </dev/tty; echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then return 1; fi
+    fi
+
+    docker_install_core "$mode" "$INSTANCE_NAME"
+}
+
+# ==============================================================================
+# Docker Install Core — performs the actual deployment
+# ==============================================================================
+docker_install_core() {
+    local mode="$1"
+    local instance_name="${2:-$DP_CONTAINER}"
+    set_deploy_profile "$mode"
+
+    local compose_file="$DP_COMPOSE_FILE"
+    if [ "$instance_name" != "$DP_CONTAINER" ]; then
+        compose_file="docker-compose-${instance_name}.yml"
+    fi
+
     echo ""
     echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${YELLOW}  Deploy: ${DP_NAME}${NC}"
     echo -e "${YELLOW}  Image:  ${DP_IMAGE}${NC}"
+    if [ "$instance_name" != "$DP_CONTAINER" ]; then
+        echo -e "${YELLOW}  Instance / 实例: ${instance_name}${NC}"
+    fi
     echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
     echo ""
 
     # Network detection
-    echo -e "${CYAN}Checking network connectivity...${NC}"
+    echo -e "${CYAN}Checking network connectivity... / 正在检测网络连通性...${NC}"
     if detect_network; then
         NEED_MIRROR=true; DOCKER_MIRROR="${DOCKER_MIRRORS[0]}"
-        echo -e "${YELLOW}⚠ Using mirror proxies / 已启用镜像加速代理${NC}"
+        echo ""
+        echo -e "${YELLOW}┌─────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}│  ⚠  ACCELERATED DOWNLOAD MODE / 加速下载模式已启用      │${NC}"
+        echo -e "${YELLOW}├─────────────────────────────────────────────────────────┤${NC}"
+        echo -e "${YELLOW}│  Mirror / 镜像站: ${CYAN}${DOCKER_MIRROR}${YELLOW}              │${NC}"
+        echo -e "${YELLOW}│  GitHub Proxy / 代理: ${CYAN}ghfast.top${YELLOW}                       │${NC}"
+        echo -e "${YELLOW}└─────────────────────────────────────────────────────────┘${NC}"
     else
-        echo -e "${GREEN}✓ Direct network access OK${NC}"
+        echo -e "${GREEN}✓ Direct network access OK / 网络直连正常${NC}"
     fi
     echo ""
 
     # Ensure Docker is installed and running
     if ! check_docker verbose; then
-        local docker_status=$?
-        if [ $docker_status -eq 1 ]; then
-            echo -n "Docker not installed. Install now? / 未安装 Docker，立即安装？ [Y/n] "
-            read -n 1 -r </dev/tty; echo
-            if [[ $REPLY =~ ^[Nn]$ ]]; then echo -e "${RED}Aborted.${NC}"; exit 1; fi
-            if ! install_docker_engine; then exit 1; fi
-        else
-            echo -e "${RED}Docker daemon is not running. Please start it first.${NC}"; exit 1
-        fi
+        echo -n "Docker not installed. Install now? / 未安装 Docker，立即安装？ [Y/n] "
+        read -n 1 -r </dev/tty; echo
+        if [[ $REPLY =~ ^[Nn]$ ]]; then echo -e "${RED}Aborted.${NC}"; exit 1; fi
+        if ! install_docker_engine; then exit 1; fi
+        echo ""
     fi
     if ! check_docker_compose; then
         echo -e "${RED}✗ docker compose not found. Please install Docker Compose.${NC}"; exit 1
     fi
     echo -e "${GREEN}✓ Docker is ready${NC}"
+    echo -e "${GREEN}✓ Compose: $COMPOSE_CMD${NC}"
+    echo ""
 
     # Configure mirror if needed
     if [ "$NEED_MIRROR" = true ]; then configure_docker_mirror; echo ""; fi
 
     # Check for existing container with same name
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$DP_CONTAINER"; then
-        echo -e "${YELLOW}⚠ Container '${DP_CONTAINER}' already exists.${NC}"
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$instance_name"; then
+        echo -e "${YELLOW}⚠ Container '${instance_name}' already exists.${NC}"
         echo -n "Stop and recreate? / 停止并重建？ [Y/n] "
         read -n 1 -r </dev/tty; echo
         if [[ $REPLY =~ ^[Nn]$ ]]; then echo -e "${YELLOW}Aborted.${NC}"; exit 0; fi
-        if [ -f "$DP_COMPOSE_FILE" ] && check_docker_compose; then
-            $COMPOSE_CMD -f "$DP_COMPOSE_FILE" -p "$DP_PROJECT" down 2>/dev/null || true
+        if [ -f "$compose_file" ] && check_docker_compose; then
+            $COMPOSE_CMD -f "$compose_file" -p "$instance_name" down 2>/dev/null || true
         else
-            docker stop "$DP_CONTAINER" 2>/dev/null || true
-            docker rm "$DP_CONTAINER" 2>/dev/null || true
+            docker stop "$instance_name" 2>/dev/null || true
+            docker rm "$instance_name" 2>/dev/null || true
         fi
         echo ""
     fi
 
     # Download docker-compose.yml from the appropriate project
     echo -e "${CYAN}Downloading docker-compose.yml for ${DP_NAME}...${NC}"
-    download_with_fallback "$DP_COMPOSE_URL" "$DP_COMPOSE_URL_CN" "$DP_COMPOSE_FILE"
-    echo -e "${GREEN}✓ Downloaded: ${DP_COMPOSE_FILE}${NC}"
+    download_with_fallback "$DP_COMPOSE_URL" "$DP_COMPOSE_URL_CN" "$compose_file"
+    echo -e "${GREEN}✓ Downloaded: ${compose_file}${NC}"
+
+    # Customize compose file for non-default instance (unique names for isolation)
+    if [ "$instance_name" != "$DP_CONTAINER" ]; then
+        echo -e "${CYAN}Customizing for instance '$instance_name'... / 正在为实例 '$instance_name' 定制配置...${NC}"
+        sed_inplace "s/container_name: ${DP_CONTAINER}/container_name: ${instance_name}/" "$compose_file"
+        # Rename volumes and network for isolation
+        sed_inplace "s/name: ${DP_CONTAINER}-/name: ${instance_name}-/g" "$compose_file"
+        sed_inplace "s/name: ${DP_PROJECT}-net/name: ${instance_name}-net/" "$compose_file"
+        echo -e "${GREEN}✓ Configured for instance: $instance_name${NC}"
+    fi
 
     # Port configuration — interactive
     echo ""
     echo -e "${CYAN}═══ Port Configuration / 端口配置 ═══${NC}"
     local host_ports=()
     local idx=0
+    # Collect ports already assigned by other Docker instances
+    local assigned_ports=()
+    for _cf in docker-compose.yml docker-compose-*.yml; do
+        [ -f "$_cf" ] || continue
+        [ "$_cf" = "$compose_file" ] && continue
+        for _internal in ${DP_INTERNAL_PORTS}; do
+            local _ap
+            _ap=$(grep -oE "\"[0-9]+:${_internal}\"" "$_cf" 2>/dev/null | head -1 | grep -oE '^"[0-9]+' | tr -d '"')
+            [ -n "$_ap" ] && assigned_ports+=("$_ap")
+        done
+    done
+
     for mapping in "${DP_PORT_MAPPINGS[@]}"; do
         local default_host="${mapping%%:*}"
         local container_port="${mapping##*:}"
@@ -403,6 +507,13 @@ docker_install() {
 
         find_available_port "$default_host"
         local suggested_port=$FOUND_PORT
+        # If found port is assigned to another instance (stopped), bump and retry
+        for _used in "${assigned_ports[@]}"; do
+            while [ "$suggested_port" = "$_used" ]; do
+                find_available_port $((suggested_port + 1))
+                suggested_port=$FOUND_PORT
+            done
+        done
 
         if [ "$suggested_port" -ne "$default_host" ]; then
             echo -e "${YELLOW}  ⚠ ${label}: default port ${default_host} is occupied${NC}"
@@ -432,18 +543,46 @@ docker_install() {
 
         # Update compose file with chosen port
         if [ "$chosen_port" -ne "$default_host" ]; then
-            sed_inplace "s|\"${default_host}:${container_port}\"|\"${chosen_port}:${container_port}\"|" "$DP_COMPOSE_FILE"
+            sed_inplace "s|\"${default_host}:${container_port}\"|\"${chosen_port}:${container_port}\"|" "$compose_file"
         fi
 
         host_ports+=("$chosen_port")
+        assigned_ports+=("$chosen_port")
         idx=$((idx + 1))
     done
+
+    # Configuration confirmation summary
     echo ""
+    echo -e "${CYAN}┌─────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│  Configuration Summary / 配置摘要                       │${NC}"
+    echo -e "${CYAN}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${CYAN}│  Mode / 模式:     ${BOLD}${DP_NAME}${NC}"
+    echo -e "${CYAN}│  Instance / 实例: ${BOLD}${instance_name}${NC}"
+    echo -e "${CYAN}│  Image / 镜像:    ${BOLD}${DP_IMAGE}${NC}"
+    echo -e "${CYAN}│  Compose file:    ${BOLD}${compose_file}${NC}"
+    idx=0
+    for hp in "${host_ports[@]}"; do
+        local label="${DP_PORT_LABELS[$idx]}"
+        echo -e "${CYAN}│  ${label} port:${NC}    ${BOLD}${hp}${NC}"
+        idx=$((idx + 1))
+    done
+    if [ "$NEED_MIRROR" = true ]; then
+        echo -e "${CYAN}│  Mirror / 加速:   ${BOLD}${DOCKER_MIRROR}${NC}"
+    fi
+    echo -e "${CYAN}└─────────────────────────────────────────────────────────┘${NC}"
+    echo ""
+    echo -n "Proceed with deployment? / 确认部署？ [Y/n] "
+    read -n 1 -r </dev/tty; echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo -e "${YELLOW}Deployment cancelled / 部署已取消${NC}"
+        rm -f "$compose_file"
+        return 1
+    fi
 
     # Apply image mirror if needed
-    apply_image_mirror "$DP_COMPOSE_FILE" "$DP_ORIGINAL_IMAGE"
+    apply_image_mirror "$compose_file" "$DP_ORIGINAL_IMAGE"
 
-    local compose_run="$COMPOSE_CMD -f $DP_COMPOSE_FILE -p $DP_PROJECT"
+    local compose_run="$COMPOSE_CMD -f $compose_file -p $instance_name"
 
     # Pull image
     echo ""
@@ -452,7 +591,7 @@ docker_install() {
     if ! $compose_run pull 2>&1; then
         if [ "$NEED_MIRROR" = true ]; then
             echo -e "${YELLOW}Mirror pull failed, trying direct... / 镜像拉取失败，尝试直连...${NC}"
-            revert_image_mirror "$DP_COMPOSE_FILE" "$DP_ORIGINAL_IMAGE"
+            revert_image_mirror "$compose_file" "$DP_ORIGINAL_IMAGE"
             if ! $compose_run pull 2>&1; then
                 echo -e "${RED}✗ Failed to pull image / 拉取镜像失败${NC}"; exit 1
             fi
@@ -485,6 +624,15 @@ docker_install() {
     done
     printf "\r                          \r"
 
+    if [ $waited -ge $max_wait ]; then
+        echo -e "${YELLOW}⚠ Services are still starting. Check status with:"
+        echo -e "  服务仍在启动中，请用以下命令检查状态：${NC}"
+        echo -e "  ${GREEN}$compose_run ps${NC}"
+        echo -e "  ${GREEN}$compose_run logs --tail 30${NC}"
+    else
+        echo -e "${GREEN}✓ Services are ready! / 服务已就绪！${NC}"
+    fi
+
     # Summary
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
@@ -501,14 +649,40 @@ docker_install() {
         idx=$((idx + 1))
     done
 
-    echo -e "${YELLOW}Management commands / 管理命令：${NC}"
-    echo -e "  ${GREEN}${compose_run} ps${NC}              — Status / 状态"
-    echo -e "  ${GREEN}${compose_run} logs --tail 50${NC}  — Logs / 日志"
-    echo -e "  ${GREEN}${compose_run} restart${NC}         — Restart / 重启"
-    echo -e "  ${GREEN}${compose_run} stop${NC}            — Stop / 停止"
-    echo -e "  ${GREEN}${compose_run} down${NC}            — Remove / 删除容器"
-    echo -e "  ${GREEN}${compose_run} pull && ${compose_run} up -d${NC} — Update / 更新"
+    # Data volume paths
+    local vol_base="/var/lib/docker/volumes"
+    echo -e "${CYAN}📂 Data volumes (host path) / 数据卷（宿主机路径）：${NC}"
+    local vol_names
+    vol_names=$(docker inspect --format '{{ range .Mounts }}{{ .Name }} {{ end }}' "$instance_name" 2>/dev/null || true)
+    if [ -n "$vol_names" ]; then
+        for vn in $vol_names; do
+            echo -e "  ${GREEN}${vol_base}/${vn}/_data${NC}"
+        done
+    else
+        echo -e "  ${GREEN}${vol_base}/${instance_name}-data/_data${NC}"
+    fi
     echo ""
+
+    # First-time login hint
+    echo -e "${YELLOW}🔐 First-time login / 首次登录：${NC}"
+    echo -e "  View initial admin credentials in container logs:"
+    echo -e "  查看容器日志中的初始管理员账户信息："
+    echo ""
+    echo "────────────────────────────────────────"
+    $compose_run logs --tail 50 2>/dev/null || true
+    echo "────────────────────────────────────────"
+    echo ""
+
+    # Management commands
+    echo -e "${YELLOW}Management commands / 管理命令：${NC}"
+    echo -e "  ${GREEN}$compose_run ps${NC}              — Status / 状态"
+    echo -e "  ${GREEN}$compose_run logs --tail 50${NC}  — Logs / 日志"
+    echo -e "  ${GREEN}$compose_run restart${NC}         — Restart / 重启"
+    echo -e "  ${GREEN}$compose_run stop${NC}            — Stop / 停止"
+    echo -e "  ${GREEN}$compose_run down${NC}            — Remove / 删除容器"
+    echo -e "  ${GREEN}$compose_run pull && $compose_run up -d${NC} — Update / 更新"
+    echo ""
+    exit 0
 }
 
 # ==============================================================================
@@ -517,86 +691,295 @@ docker_install() {
 manage_deployment() {
     local container="$1"
 
-    # Find matching compose file
+    # Find matching compose file (try exact name, then scan compose files)
     local compose_file="" project=""
     case "$container" in
         clawdeckx)   compose_file="docker-compose-clawdeckx.yml"; project="clawdeckx" ;;
         hermesdeckx) compose_file="docker-compose-hermesdeckx.yml"; project="hermesdeckx" ;;
         deckxhub)    compose_file="docker-compose.yml"; project="deckxhub" ;;
     esac
+    # Fallback: try docker-compose-{name}.yml for custom instances
+    if [ -z "$compose_file" ] || [ ! -f "$compose_file" ]; then
+        if [ -f "docker-compose-${container}.yml" ]; then
+            compose_file="docker-compose-${container}.yml"
+            project="$container"
+        fi
+    fi
+    # Fallback: scan all compose files for this container name
+    if [ -z "$compose_file" ] || [ ! -f "$compose_file" ]; then
+        for _cf in docker-compose.yml docker-compose-*.yml; do
+            [ -f "$_cf" ] || continue
+            if grep -q "container_name: ${container}" "$_cf" 2>/dev/null; then
+                compose_file="$_cf"
+                project="$container"
+                break
+            fi
+        done
+    fi
 
-    if [ ! -f "$compose_file" ]; then
+    if [ -z "$compose_file" ] || [ ! -f "$compose_file" ]; then
         echo -e "${YELLOW}No compose file found for ${container}. Using docker commands directly.${NC}"
         compose_file=""
     fi
 
+    # Gather container info
+    local is_running=false
+    if docker ps --filter "name=^${container}$" --filter "status=running" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+        is_running=true
+    fi
+    local docker_ver
+    docker_ver=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$container" 2>/dev/null || echo "unknown")
+    [ "$docker_ver" = "<no value>" ] && docker_ver="unknown"
+    local docker_img
+    docker_img=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null || echo "unknown")
+
+    # Read port(s) from compose file
+    local compose_ports=""
+    if [ -n "$compose_file" ] && [ -f "$compose_file" ]; then
+        compose_ports=$(grep -oE '"[0-9]+:[0-9]+"' "$compose_file" 2>/dev/null | tr -d '"' | tr '\n' ' ')
+    fi
+
     echo ""
-    echo -e "${CYAN}Managing: ${BOLD}${container}${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}  Manage: ${BOLD}${container}${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo "  1) Status / 状态"
-    echo "  2) Logs / 日志"
+    echo -e "${CYAN}Compose file / 配置文件：${NC} ${compose_file:-N/A}"
+    echo -e "${CYAN}Image / 镜像：${NC}          $docker_img"
+    echo -e "${CYAN}Version / 版本：${NC}        $docker_ver"
+    echo -e "${CYAN}Port(s) / 端口：${NC}        ${compose_ports:-N/A}"
+    if [ "$is_running" = true ]; then
+        echo -e "${CYAN}Status / 状态：${NC}         ${GREEN}Running / 运行中${NC}"
+    else
+        echo -e "${CYAN}Status / 状态：${NC}         ${YELLOW}Stopped / 已停止${NC}"
+    fi
+    echo ""
+    echo -e "${YELLOW}What would you like to do? / 您想做什么？${NC}"
+    echo "  1) Update / 更新"
+    if [ "$is_running" = true ]; then
+        echo "  2) Stop / 停止"
+    else
+        echo "  2) Start / 启动"
+    fi
     echo "  3) Restart / 重启"
-    echo "  4) Stop / 停止"
-    echo "  5) Update (pull + recreate) / 更新"
-    echo "  6) Remove (stop + delete) / 卸载"
+    echo "  4) Logs / 查看日志"
+    echo "  5) Status / 查看状态"
+    echo "  6) Uninstall / 卸载"
     echo "  7) Back / 返回"
     echo ""
     echo -n "Choice / 选择 [1-7]: "
-    read -n 1 -r </dev/tty; echo
+    read -n 1 -r MGMT_CHOICE </dev/tty; echo
 
-    if [ -n "$compose_file" ] && check_docker_compose; then
+    if [ -n "$compose_file" ] && [ -f "$compose_file" ] && check_docker_compose; then
         local cr="$COMPOSE_CMD -f $compose_file -p $project"
-        case "$REPLY" in
-            1) $cr ps ;;
-            2) $cr logs --tail 80 ;;
-            3) $cr restart; echo -e "${GREEN}✓ Restarted${NC}" ;;
-            4) $cr stop; echo -e "${GREEN}✓ Stopped${NC}" ;;
-            5)
-                echo -e "${CYAN}Pulling latest image... / 拉取最新镜像...${NC}"
-                $cr pull
+        case "$MGMT_CHOICE" in
+            1)
+                # Update
+                echo ""
+                echo -e "${CYAN}Checking network connectivity... / 正在检测网络连通性...${NC}"
+                if detect_network; then
+                    NEED_MIRROR=true; DOCKER_MIRROR="${DOCKER_MIRRORS[0]}"
+                    echo -e "${YELLOW}⚠ Using mirror / 已启用加速${NC}"
+                    configure_docker_mirror
+                    # Try to figure out original image for mirror
+                    local orig_img
+                    orig_img=$(echo "$docker_img" | sed 's|^[^/]*/||; s|:.*||')
+                    orig_img="knowhunters/$orig_img"
+                    apply_image_mirror "$compose_file" "$orig_img"
+                else
+                    echo -e "${GREEN}✓ Direct network access OK${NC}"
+                fi
+                echo ""
+                echo -e "${BLUE}Pulling latest image... / 正在拉取最新镜像...${NC}"
+                if ! $cr pull 2>&1; then
+                    if [ "$NEED_MIRROR" = true ]; then
+                        echo -e "${YELLOW}Mirror pull failed, reverting... / 镜像加速失败，回退直连...${NC}"
+                        local orig_img2
+                        orig_img2=$(echo "$docker_img" | sed 's|^[^/]*/||; s|:.*||')
+                        orig_img2="knowhunters/$orig_img2"
+                        revert_image_mirror "$compose_file" "$orig_img2"
+                        $cr pull 2>&1
+                    fi
+                fi
+                echo ""
+                echo -e "${BLUE}Recreating container... / 正在重建容器...${NC}"
                 $cr up -d
-                echo -e "${GREEN}✓ Updated / 已更新${NC}"
+                echo ""
+                # Wait briefly for health
+                local uw=0
+                while [ $uw -lt 30 ]; do
+                    if [ -n "$compose_ports" ]; then
+                        local first_port
+                        first_port=$(echo "$compose_ports" | awk -F: '{print $1}' | awk '{print $1}')
+                        if curl -sf "http://localhost:${first_port}/api/v1/health" >/dev/null 2>&1; then break; fi
+                    fi
+                    sleep 2; uw=$((uw + 2))
+                done
+                local new_ver
+                new_ver=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$container" 2>/dev/null || echo "unknown")
+                [ "$new_ver" = "<no value>" ] && new_ver="unknown"
+                echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+                echo -e "${GREEN}  ✅ Update complete! / 更新完成！${NC}"
+                echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+                echo -e "  Previous / 旧版本: $docker_ver"
+                echo -e "  Current  / 新版本: $new_ver"
                 ;;
-            6)
-                echo -n "Are you sure? This will delete the container. Data volumes are kept. / 确定卸载？数据卷会保留。 [y/N] "
-                read -n 1 -r </dev/tty; echo
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
-                    $cr down
-                    rm -f "$compose_file"
-                    echo -e "${GREEN}✓ Removed / 已卸载${NC}"
+            2)
+                if [ "$is_running" = true ]; then
+                    echo ""
+                    echo -e "${BLUE}Stopping container... / 正在停止容器...${NC}"
+                    $cr stop
+                    echo -e "${GREEN}✓ Stopped / 已停止${NC}"
+                else
+                    echo ""
+                    echo -e "${BLUE}Starting container... / 正在启动容器...${NC}"
+                    $cr up -d
+                    sleep 2
+                    echo -e "${GREEN}✓ Started / 已启动${NC}"
+                    if [ -n "$compose_ports" ]; then
+                        for _pp in $compose_ports; do
+                            local _hp="${_pp%%:*}"
+                            print_access_urls "$_hp" "$container"
+                        done
+                    fi
                 fi
                 ;;
-            7) return ;;
-            *) echo -e "${RED}Invalid choice${NC}" ;;
+            3)
+                echo ""
+                echo -e "${BLUE}Restarting container... / 正在重启容器...${NC}"
+                $cr restart
+                echo -e "${GREEN}✓ Restarted / 已重启${NC}"
+                ;;
+            4)
+                echo ""
+                echo -e "${CYAN}Recent logs / 最近日志：${NC}"
+                echo "────────────────────────────────────────"
+                $cr logs --tail 80
+                echo "────────────────────────────────────────"
+                ;;
+            5)
+                echo ""
+                $cr ps
+                echo ""
+                if [ "$is_running" = true ] && [ -n "$compose_ports" ]; then
+                    for _pp in $compose_ports; do
+                        local _hp="${_pp%%:*}"
+                        print_access_urls "$_hp" "$container"
+                        echo ""
+                    done
+                fi
+                ;;
+            6)
+                # Uninstall with options
+                echo ""
+                echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+                echo -e "${YELLOW}  Uninstall / 卸载: ${container}${NC}"
+                echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+                echo ""
+                echo -e "${CYAN}This will: / 将执行：${NC}"
+                echo "  - Stop and remove the container / 停止并删除容器"
+                echo ""
+
+                local remove_volumes=false
+                echo -n "Also remove data volumes? (config, database, logs) / 同时删除数据卷？ [y/N] "
+                read -n 1 -r </dev/tty; echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    remove_volumes=true
+                    echo -e "  ${RED}- Data volumes will be removed / 数据卷将被删除${NC}"
+                fi
+
+                local remove_image=false
+                echo -n "Also remove Docker image? / 同时删除 Docker 镜像？ [y/N] "
+                read -n 1 -r </dev/tty; echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    remove_image=true
+                    echo -e "  ${RED}- Docker image will be removed / Docker 镜像将被删除${NC}"
+                fi
+
+                local remove_compose=false
+                echo -n "Also remove ${compose_file}? / 同时删除 ${compose_file}？ [y/N] "
+                read -n 1 -r </dev/tty; echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    remove_compose=true
+                    echo -e "  ${RED}- ${compose_file} will be removed / ${compose_file} 将被删除${NC}"
+                fi
+
+                echo ""
+                echo -n -e "${RED}Confirm uninstall? / 确认卸载？ [y/N] ${NC}"
+                read -n 1 -r </dev/tty; echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}Uninstall cancelled / 卸载已取消${NC}"
+                    return
+                fi
+
+                echo ""
+                if [ "$remove_volumes" = true ]; then
+                    $cr down -v
+                    echo -e "${GREEN}✓ Container and volumes removed / 容器和数据卷已删除${NC}"
+                else
+                    $cr down
+                    echo -e "${GREEN}✓ Container removed (volumes preserved) / 容器已删除（数据卷已保留）${NC}"
+                fi
+
+                if [ "$remove_image" = true ]; then
+                    echo -e "${BLUE}Removing Docker image... / 正在删除 Docker 镜像...${NC}"
+                    docker rmi "$docker_img" 2>/dev/null || true
+                    echo -e "${GREEN}✓ Image removed / 镜像已删除${NC}"
+                fi
+
+                if [ "$remove_compose" = true ]; then
+                    rm -f "$compose_file"
+                    echo -e "${GREEN}✓ ${compose_file} removed / ${compose_file} 已删除${NC}"
+                fi
+
+                echo ""
+                echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+                echo -e "${GREEN}  ✅ Uninstall complete! / 卸载完成！${NC}"
+                echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+                ;;
+            7)
+                exec bash "$SELF_SCRIPT" "$@"
+                ;;
+            *)
+                echo -e "${RED}Invalid choice / 选择无效${NC}"
+                ;;
         esac
     else
-        case "$REPLY" in
-            1) docker ps -a --filter "name=$container" ;;
-            2) docker logs --tail 80 "$container" ;;
-            3) docker restart "$container"; echo -e "${GREEN}✓ Restarted${NC}" ;;
-            4) docker stop "$container"; echo -e "${GREEN}✓ Stopped${NC}" ;;
-            5)
-                local img; img=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
-                if [ -n "$img" ]; then
-                    docker pull "$img"
+        # No compose file — use raw docker commands
+        case "$MGMT_CHOICE" in
+            1)
+                if [ -n "$docker_img" ] && [ "$docker_img" != "unknown" ]; then
+                    docker pull "$docker_img"
                     docker stop "$container" 2>/dev/null || true
                     docker rm "$container" 2>/dev/null || true
                     echo -e "${YELLOW}Container removed. Re-run install to recreate.${NC}"
+                    echo -e "${YELLOW}容器已删除。请重新运行安装脚本来重建。${NC}"
                 fi
                 ;;
+            2)
+                if [ "$is_running" = true ]; then
+                    docker stop "$container"; echo -e "${GREEN}✓ Stopped${NC}"
+                else
+                    docker start "$container"; echo -e "${GREEN}✓ Started${NC}"
+                fi
+                ;;
+            3) docker restart "$container"; echo -e "${GREEN}✓ Restarted${NC}" ;;
+            4) docker logs --tail 80 "$container" ;;
+            5) docker ps -a --filter "name=^${container}$" ;;
             6)
-                echo -n "Are you sure? [y/N] "
+                echo -n "Are you sure? / 确定卸载？ [y/N] "
                 read -n 1 -r </dev/tty; echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
                     docker stop "$container" 2>/dev/null || true
                     docker rm "$container" 2>/dev/null || true
-                    echo -e "${GREEN}✓ Removed${NC}"
+                    echo -e "${GREEN}✓ Removed / 已卸载${NC}"
                 fi
                 ;;
-            7) return ;;
-            *) echo -e "${RED}Invalid choice${NC}" ;;
+            7) exec bash "$SELF_SCRIPT" "$@" ;;
+            *) echo -e "${RED}Invalid choice / 选择无效${NC}" ;;
         esac
     fi
+    exit 0
 }
 
 # ==============================================================================
@@ -619,17 +1002,21 @@ detect_deployments
 if [ ${#DETECTED_DEPLOYMENTS[@]} -gt 0 ] || [ ${#DETECTED_COMPOSE_FILES[@]} -gt 0 ]; then
     echo -e "${CYAN}Detected deployments / 检测到的部署：${NC}"
     for d in "${DETECTED_DEPLOYMENTS[@]}"; do
-        status=$(docker inspect --format='{{.State.Status}}' "$d" 2>/dev/null || echo "unknown")
-        img=$(docker inspect --format='{{.Config.Image}}' "$d" 2>/dev/null || echo "unknown")
-        echo -e "  🐳 ${BOLD}${d}${NC}  [${GREEN}${status}${NC}]  ${img}"
+        d_status=$(docker inspect --format='{{.State.Status}}' "$d" 2>/dev/null || echo "unknown")
+        d_img=$(docker inspect --format='{{.Config.Image}}' "$d" 2>/dev/null || echo "unknown")
+        if [ "$d_status" = "running" ]; then
+            echo -e "  🐳 ${BOLD}${d}${NC}  [${GREEN}${d_status}${NC}]  ${d_img}"
+        else
+            echo -e "  🐳 ${BOLD}${d}${NC}  [${YELLOW}${d_status}${NC}]  ${d_img}"
+        fi
     done
     for cf in "${DETECTED_COMPOSE_FILES[@]}"; do
-        already_shown=false
+        cf_shown=false
         for d in "${DETECTED_DEPLOYMENTS[@]}"; do
-            if echo "$cf" | grep -q "$d" 2>/dev/null; then already_shown=true; break; fi
+            if echo "$cf" | grep -q "$d" 2>/dev/null; then cf_shown=true; break; fi
         done
-        if [ "$already_shown" = false ]; then
-            echo -e "  📄 ${cf} (container not running)"
+        if [ "$cf_shown" = false ]; then
+            echo -e "  📄 ${cf} (${YELLOW}no container${NC})"
         fi
     done
     echo ""
@@ -651,7 +1038,12 @@ if [ ${#DETECTED_DEPLOYMENTS[@]} -gt 0 ]; then
     mgmt_idx=4
     MGMT_MAP=()
     for d in "${DETECTED_DEPLOYMENTS[@]}"; do
-        echo "  ${mgmt_idx}) Manage: ${d}"
+        d_status=$(docker inspect --format='{{.State.Status}}' "$d" 2>/dev/null || echo "unknown")
+        if [ "$d_status" = "running" ]; then
+            echo -e "  ${mgmt_idx}) Manage: ${d}  [${GREEN}${d_status}${NC}]"
+        else
+            echo -e "  ${mgmt_idx}) Manage: ${d}  [${YELLOW}${d_status}${NC}]"
+        fi
         MGMT_MAP+=("$d")
         mgmt_idx=$((mgmt_idx + 1))
     done
@@ -664,8 +1056,7 @@ else
 fi
 echo ""
 echo -n "Enter your choice [1-$MENU_MAX] / 输入选择 [1-$MENU_MAX]: "
-read -n 1 -r MAIN_CHOICE </dev/tty
-echo
+read -r MAIN_CHOICE </dev/tty
 
 case "$MAIN_CHOICE" in
     1)
