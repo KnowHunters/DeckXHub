@@ -627,7 +627,7 @@ HAS_EXISTING=false
 if [ ${#DETECTED_DEPLOYMENTS[@]} -gt 0 ]; then
     HAS_EXISTING=true
     echo -e "  ${BOLD}── Manage / 管理 ──${NC}"
-    local mgmt_idx=4
+    mgmt_idx=4
     MGMT_MAP=()
     for d in "${DETECTED_DEPLOYMENTS[@]}"; do
         echo "  ${mgmt_idx}) Manage: ${d}"
@@ -658,7 +658,7 @@ case "$MAIN_CHOICE" in
         ;;
     *)
         if [ "$HAS_EXISTING" = true ]; then
-            local idx=$((MAIN_CHOICE - 4))
+            idx=$((MAIN_CHOICE - 4))
             if [ "$idx" -ge 0 ] 2>/dev/null && [ "$idx" -lt "${#MGMT_MAP[@]}" ] 2>/dev/null; then
                 manage_deployment "${MGMT_MAP[$idx]}"
             elif [ "$MAIN_CHOICE" = "$MENU_MAX" ]; then
