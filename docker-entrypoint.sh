@@ -23,26 +23,9 @@ write_bootstrap() {
     echo "$value" > "$dir/$key"
 }
 
-# --- Generate initial admin credentials (first run only) ---
-# Each product gets its own credentials file in /data/<product>/bootstrap/
-# install.sh reads these after health check to display to the user.
-generate_credentials() {
-    local product="$1"
-    local cred_file="/data/${product}/bootstrap/credentials"
-    if [ -f "$cred_file" ]; then
-        # Already generated — read existing
-        INIT_USER=$(sed -n '1p' "$cred_file")
-        INIT_PASS=$(sed -n '2p' "$cred_file")
-        return 0
-    fi
-    # First run — generate random password (12 chars alphanumeric)
-    INIT_USER="admin"
-    INIT_PASS=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 12)
-    # Persist so we don't regenerate on container restart
-    mkdir -p "/data/${product}/bootstrap"
-    printf '%s\n%s\n' "$INIT_USER" "$INIT_PASS" > "$cred_file"
-    chmod 600 "$cred_file"
-    echo "[DeckXHub] Generated initial admin credentials for ${product}"
+# --- Helper: generate random password (alphanumeric, 16 chars) ---
+generate_password() {
+    head -c 24 /dev/urandom | base64 | tr -d '/+=\n' | head -c 16
 }
 
 # --- Ensure data directories ---
@@ -201,20 +184,28 @@ start_clawdeckx() {
 
     local port="${OCD_PORT:-18788}"
     local bind="${OCD_BIND:-0.0.0.0}"
+    local init_args=""
+
+    # First boot: generate admin credentials
+    local cred_flag="/data/clawdeckx/.credentials-created"
+    if [ ! -f "$cred_flag" ]; then
+        local admin_user="admin"
+        local admin_pass
+        admin_pass=$(generate_password)
+        init_args="--user $admin_user --password $admin_pass"
+        mkdir -p /data/clawdeckx
+        echo "$admin_user" > "$cred_flag"
+        echo "[DeckXHub] [CREDENTIALS] ClawDeckX admin account created:"
+        echo "[DeckXHub] [CREDENTIALS] ClawDeckX Username: $admin_user"
+        echo "[DeckXHub] [CREDENTIALS] ClawDeckX Password: $admin_pass"
+    fi
 
     write_bootstrap "clawdeckx" "status" "starting"
-
-    # Generate initial admin credentials on first run
-    generate_credentials "clawdeckx"
-    local cred_args=""
-    if [ -n "$INIT_USER" ] && [ -n "$INIT_PASS" ]; then
-        cred_args="--user $INIT_USER --password $INIT_PASS"
-    fi
 
     $bin \
         --port "$port" \
         --host "$bind" \
-        $cred_args &
+        $init_args &
     local pid=$!
     echo "[DeckXHub] ClawDeckX started (PID $pid, port $port)"
     write_bootstrap "clawdeckx" "pid" "$pid"
@@ -239,20 +230,28 @@ start_hermesdeckx() {
 
     local port="${OHD_PORT:-19788}"
     local bind="${OHD_BIND:-0.0.0.0}"
+    local init_args=""
+
+    # First boot: generate admin credentials
+    local cred_flag="/data/hermesdeckx/.credentials-created"
+    if [ ! -f "$cred_flag" ]; then
+        local admin_user="admin"
+        local admin_pass
+        admin_pass=$(generate_password)
+        init_args="--user $admin_user --password $admin_pass"
+        mkdir -p /data/hermesdeckx
+        echo "$admin_user" > "$cred_flag"
+        echo "[DeckXHub] [CREDENTIALS] HermesDeckX admin account created:"
+        echo "[DeckXHub] [CREDENTIALS] HermesDeckX Username: $admin_user"
+        echo "[DeckXHub] [CREDENTIALS] HermesDeckX Password: $admin_pass"
+    fi
 
     write_bootstrap "hermesdeckx" "status" "starting"
-
-    # Generate initial admin credentials on first run
-    generate_credentials "hermesdeckx"
-    local cred_args=""
-    if [ -n "$INIT_USER" ] && [ -n "$INIT_PASS" ]; then
-        cred_args="--user $INIT_USER --password $INIT_PASS"
-    fi
 
     $bin \
         --port "$port" \
         --host "$bind" \
-        $cred_args &
+        $init_args &
     local pid=$!
     echo "[DeckXHub] HermesDeckX started (PID $pid, port $port)"
     write_bootstrap "hermesdeckx" "pid" "$pid"

@@ -683,38 +683,38 @@ docker_install_core() {
     fi
     echo ""
 
-    # First-time login credentials (read from container bootstrap files)
-    echo -e "${YELLOW}🔐 Initial Login Credentials / 初始登录凭据：${NC}"
-    echo ""
-    local _cred_shown=false
-    for _product in clawdeckx hermesdeckx; do
-        local _cred
-        _cred=$(docker exec "$instance_name" cat "/data/${_product}/bootstrap/credentials" 2>/dev/null || true)
-        if [ -n "$_cred" ]; then
-            local _user _pass _label
-            _user=$(echo "$_cred" | sed -n '1p')
-            _pass=$(echo "$_cred" | sed -n '2p')
-            case "$_product" in
-                clawdeckx)   _label="ClawDeckX" ;;
-                hermesdeckx) _label="HermesDeckX" ;;
-            esac
-            echo -e "  ${CYAN}${_label}:${NC}"
-            echo -e "    Username / 用户名:  ${BOLD}${_user}${NC}"
-            echo -e "    Password / 密码:    ${BOLD}${_pass}${NC}"
-            echo ""
-            _cred_shown=true
-        fi
-    done
-    if [ "$_cred_shown" = false ]; then
-        echo -e "  ${YELLOW}Credentials not found. Check container logs:${NC}"
-        echo -e "  ${YELLOW}未找到凭据，请查看容器日志：${NC}"
-        echo -e "  ${GREEN}$compose_run logs --tail 50${NC}"
+    # First-time login: extract auto-generated credentials from container logs
+    local cred_lines
+    cred_lines=$(docker logs "$instance_name" 2>&1 | grep '\[CREDENTIALS\]' || true)
+    if [ -n "$cred_lines" ]; then
+        echo -e "${YELLOW}🔐 Admin credentials (auto-generated on first boot)：${NC}"
+        echo -e "${YELLOW}   管理员账号（首次启动时自动生成）：${NC}"
         echo ""
+        echo "$cred_lines" | while IFS= read -r line; do
+            # Extract product, field, value from lines like:
+            # [DeckXHub] [CREDENTIALS] ClawDeckX Username: admin
+            local product field value
+            if echo "$line" | grep -q "Username:"; then
+                product=$(echo "$line" | sed 's/.*\[CREDENTIALS\] \([^ ]*\) Username:.*/\1/')
+                value=$(echo "$line" | sed 's/.*Username: //')
+                echo -e "  ${CYAN}${product}${NC}"
+                echo -e "    Username / 用户名: ${BOLD}${value}${NC}"
+            elif echo "$line" | grep -q "Password:"; then
+                value=$(echo "$line" | sed 's/.*Password: //')
+                echo -e "    Password / 密码:   ${BOLD}${value}${NC}"
+                echo ""
+            fi
+        done
+        echo -e "  ${RED}⚠ Save these credentials! They are only shown once.${NC}"
+        echo -e "  ${RED}⚠ 请保存以上凭据！仅在首次部署时显示。${NC}"
     else
-        echo -e "  ${YELLOW}⚠ Please change the default password after first login!${NC}"
-        echo -e "  ${YELLOW}⚠ 请在首次登录后修改默认密码！${NC}"
-        echo ""
+        echo -e "${YELLOW}🔐 First-time setup / 首次设置：${NC}"
+        echo -e "  Open the URL above in your browser."
+        echo -e "  在浏览器中打开上方地址。"
+        echo -e "  A Setup Wizard will guide you to create an admin account."
+        echo -e "  设置向导将引导您创建管理员账号。"
     fi
+    echo ""
 
     # Management commands
     echo -e "${YELLOW}Management commands / 管理命令：${NC}"
