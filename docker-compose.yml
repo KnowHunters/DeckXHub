@@ -1,0 +1,89 @@
+# ==============================================================================
+# DeckXHub — Unified Docker Compose
+# ==============================================================================
+# INSTALL_MODE controls which components run:
+#   clawdeckx   — OpenClaw + ClawDeckX only
+#   hermesdeckx — HermesAgent + HermesDeckX only
+#   both        — All four components (default)
+# ==============================================================================
+
+services:
+  deckxhub:
+    image: knowhunters/deckxhub:latest
+    container_name: deckxhub
+    restart: unless-stopped
+    ports:
+      # ClawDeckX Web UI (host:container)
+      - "18700:18788"
+      # HermesDeckX Web UI (host:container)
+      - "19700:19788"
+    volumes:
+      - deckxhub-data:/data
+      - deckxhub-runtime:/data/runtime
+    environment:
+      # ── Mode Selection ──
+      INSTALL_MODE: "both"
+
+      # ── ClawDeckX Settings ──
+      OCD_DB_SQLITE_PATH: /data/clawdeckx/ClawDeckX.db
+      OCD_LOG_FILE: /data/clawdeckx/ClawDeckX.log
+      OCD_CONFIG: /data/clawdeckx/ClawDeckX.json
+      OCD_BIND: "0.0.0.0"
+      OCD_PORT: "18788"
+      OCD_HOST_PORT: "18700"
+      OCD_OPENCLAW_GATEWAY_PORT: "18789"
+
+      # ── OpenClaw Settings ──
+      OPENCLAW_HOME: /data/openclaw/home
+      OPENCLAW_STATE_DIR: /data/openclaw/state
+      OPENCLAW_CONFIG_PATH: /data/openclaw/state/openclaw.json
+      NPM_CONFIG_PREFIX: /data/openclaw/npm
+      OCD_GATEWAY_LOG: /data/openclaw/logs/gateway.log
+      OCD_SETUP_INSTALL_LOG: /data/openclaw/logs/install.log
+      OCD_SETUP_DOCTOR_LOG: /data/openclaw/logs/doctor.log
+
+      # ── HermesDeckX Settings ──
+      OHD_DB_SQLITE_PATH: /data/hermesdeckx/HermesDeckX.db
+      OHD_LOG_FILE: /data/hermesdeckx/HermesDeckX.log
+      OHD_CONFIG: /data/hermesdeckx/HermesDeckX.json
+      OHD_BIND: "0.0.0.0"
+      OHD_PORT: "19788"
+      OHD_HOST_PORT: "19700"
+      OHD_HERMESAGENT_API_PORT: "8642"
+
+      # ── HermesAgent Settings ──
+      HERMES_HOME: /data/hermesagent/home
+      HERMES_AGENT_STATE_DIR: /data/hermesagent/state
+      OHD_GATEWAY_LOG: /data/hermesagent/logs/gateway.log
+      OHD_SETUP_INSTALL_LOG: /data/hermesagent/logs/install.log
+      OHD_SETUP_DOCTOR_LOG: /data/hermesagent/logs/doctor.log
+
+      # ── Runtime ──
+      OCD_RUNTIME_DIR: /data/runtime
+      OHD_RUNTIME_DIR: /data/runtime
+      VIRTUAL_ENV: /opt/hermesagent/venv
+      TZ: UTC
+    networks:
+      - deckxhub-net
+    healthcheck:
+      test: >-
+        curl -sf http://localhost:$${OCD_PORT:-18788}/api/v1/health ||
+        curl -sf http://localhost:$${OHD_PORT:-19788}/api/v1/health || exit 1
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+volumes:
+  deckxhub-data:
+    name: deckxhub-data
+  deckxhub-runtime:
+    name: deckxhub-runtime
+
+networks:
+  deckxhub-net:
+    name: deckxhub-net

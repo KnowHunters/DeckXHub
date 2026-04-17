@@ -1,0 +1,23 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+*.exe
+*.log
+
+# Local scripts & docs (not tracked)
+docs/
+scripts/
+
+# Environment
+.env
+*.env.local
+
+# Docker
+data/

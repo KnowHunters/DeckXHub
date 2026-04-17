@@ -1,0 +1,323 @@
+name: Release DeckXHub
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: knowhunters/deckxhub
+
+jobs:
+  # ============================================================================
+  # Job 1: Build ClawDeckX binaries (multi-platform)
+  # ============================================================================
+  build-clawdeckx:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - name: Checkout DeckXHub
+        uses: actions/checkout@v4
+
+      - name: Checkout ClawDeckX
+        uses: actions/checkout@v4
+        with:
+          repository: ClawDeckX/ClawDeckX
+          path: clawdeckx-src
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build ClawDeckX frontend
+        working-directory: clawdeckx-src/web
+        run: npm ci && npm run build
+
+      - name: Build ClawDeckX backend
+        working-directory: clawdeckx-src
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMPAT=$(grep -o '"openclawCompat"[[:space:]]*:[[:space:]]*"[^"]*"' web/package.json | cut -d'"' -f4)
+          go build \
+            -ldflags="-s -w -X ClawDeckX/internal/version.Version=${VERSION} -X 'ClawDeckX/internal/version.OpenClawCompat=${COMPAT}'" \
+            -o ../clawdeckx-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./cmd/clawdeckx
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: clawdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  # ============================================================================
+  # Job 2: Build HermesDeckX binaries (multi-platform)
+  # ============================================================================
+  build-hermesdeckx:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - name: Checkout DeckXHub
+        uses: actions/checkout@v4
+
+      - name: Checkout HermesDeckX
+        uses: actions/checkout@v4
+        with:
+          repository: HermesDeckX/HermesDeckX
+          path: hermesdeckx-src
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build HermesDeckX frontend
+        working-directory: hermesdeckx-src/web
+        run: npm ci && npm run build
+
+      - name: Build HermesDeckX backend
+        working-directory: hermesdeckx-src
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMPAT=$(grep -o '"hermesagentCompat"[[:space:]]*:[[:space:]]*"[^"]*"' web/package.json | cut -d'"' -f4)
+          go build \
+            -ldflags="-s -w -X HermesDeckX/internal/version.Version=${VERSION} -X 'HermesDeckX/internal/version.HermesAgentCompat=${COMPAT}'" \
+            -o ../hermesdeckx-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./cmd/hermesdeckx
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermesdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: hermesdeckx-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  # ============================================================================
+  # Job 3: Create GitHub Release
+  # ============================================================================
+  release:
+    needs: [build-clawdeckx, build-hermesdeckx]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            cp "$dir"/* release/ 2>/dev/null || true
+          done
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================================
+  # Job 4: Build & Push Docker image (multi-arch)
+  # ============================================================================
+  docker:
+    needs: [build-clawdeckx, build-hermesdeckx]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download ClawDeckX linux-amd64
+        uses: actions/download-artifact@v4
+        with:
+          name: clawdeckx-linux-amd64
+          path: dist-amd64
+
+      - name: Download HermesDeckX linux-amd64
+        uses: actions/download-artifact@v4
+        with:
+          name: hermesdeckx-linux-amd64
+          path: dist-amd64
+
+      - name: Download ClawDeckX linux-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: clawdeckx-linux-arm64
+          path: dist-arm64
+
+      - name: Download HermesDeckX linux-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: hermesdeckx-linux-arm64
+          path: dist-arm64
+
+      - name: Prepare binaries
+        run: |
+          # amd64
+          mv dist-amd64/clawdeckx-linux-amd64 dist-amd64/clawdeckx
+          mv dist-amd64/hermesdeckx-linux-amd64 dist-amd64/hermesdeckx
+          chmod +x dist-amd64/clawdeckx dist-amd64/hermesdeckx
+          # arm64
+          mv dist-arm64/clawdeckx-linux-arm64 dist-arm64/clawdeckx
+          mv dist-arm64/hermesdeckx-linux-arm64 dist-arm64/hermesdeckx
+          chmod +x dist-arm64/clawdeckx dist-arm64/hermesdeckx
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build & push (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.prebuilt
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64
+          build-args: |
+            CLAWDECKX_BINARY=dist-amd64/clawdeckx
+            HERMESDECKX_BINARY=dist-amd64/hermesdeckx
+            BUILD_VERSION=${{ github.ref_name }}
+            BUILD_REVISION=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+      - name: Build & push (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.prebuilt
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-arm64
+          build-args: |
+            CLAWDECKX_BINARY=dist-arm64/clawdeckx
+            HERMESDECKX_BINARY=dist-arm64/hermesdeckx
+            BUILD_VERSION=${{ github.ref_name }}
+            BUILD_REVISION=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+      - name: Create multi-arch manifest
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          docker buildx imagetools create -t ${{ env.IMAGE_NAME }}:${TAG} \
+            ${{ env.IMAGE_NAME }}:${TAG}-amd64 \
+            ${{ env.IMAGE_NAME }}:${TAG}-arm64
+          docker buildx imagetools create -t ${{ env.IMAGE_NAME }}:latest \
+            ${{ env.IMAGE_NAME }}:${TAG}-amd64 \
+            ${{ env.IMAGE_NAME }}:${TAG}-arm64
+
+  # ============================================================================
+  # Job 5: Smoke test
+  # ============================================================================
+  smoke-test:
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test ClawDeckX mode
+        run: |
+          docker run -d --name test-clawdeckx \
+            -e INSTALL_MODE=clawdeckx \
+            -p 18788:18788 \
+            ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64
+          echo "Waiting for ClawDeckX..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:18788/api/v1/health; then
+              echo "ClawDeckX is healthy!"
+              break
+            fi
+            sleep 2
+          done
+          docker logs test-clawdeckx --tail 20
+          docker stop test-clawdeckx && docker rm test-clawdeckx
+
+      - name: Test HermesDeckX mode
+        run: |
+          docker run -d --name test-hermesdeckx \
+            -e INSTALL_MODE=hermesdeckx \
+            -p 19788:19788 \
+            ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64
+          echo "Waiting for HermesDeckX..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:19788/api/v1/health; then
+              echo "HermesDeckX is healthy!"
+              break
+            fi
+            sleep 2
+          done
+          docker logs test-hermesdeckx --tail 20
+          docker stop test-hermesdeckx && docker rm test-hermesdeckx
+
+      - name: Test both mode
+        run: |
+          docker run -d --name test-both \
+            -e INSTALL_MODE=both \
+            -p 28788:18788 \
+            -p 29788:19788 \
+            ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64
+          echo "Waiting for both services..."
+          sleep 30
+          curl -sf http://localhost:28788/api/v1/health && echo "ClawDeckX OK" || echo "ClawDeckX not ready"
+          curl -sf http://localhost:29788/api/v1/health && echo "HermesDeckX OK" || echo "HermesDeckX not ready"
+          docker logs test-both --tail 30
+          docker stop test-both && docker rm test-both

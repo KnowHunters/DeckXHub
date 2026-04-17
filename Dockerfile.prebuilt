@@ -1,0 +1,187 @@
+# =============================================================================
+# DeckXHub — Prebuilt Docker image (CI/CD)
+# =============================================================================
+# Used by GitHub Actions: expects pre-compiled ClawDeckX and HermesDeckX
+# binaries to be COPY'd into the image. Upstream runtimes (OpenClaw,
+# HermesAgent) are still built/installed in builder stages.
+#
+# Build args:
+#   CLAWDECKX_BINARY   — path to pre-built clawdeckx binary
+#   HERMESDECKX_BINARY — path to pre-built hermesdeckx binary
+#   OPENCLAW_VERSION   — npm version of openclaw to install
+#   HERMES_AGENT_BRANCH — git branch of hermes-agent to install
+# =============================================================================
+
+# ── Stage 1: Install OpenClaw (npm) ──
+FROM ubuntu:22.04 AS openclaw-builder
+ENV DEBIAN_FRONTEND=noninteractive
+ARG OPENCLAW_VERSION=latest
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git gnupg python3 make g++ && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+RUN npm install -g "openclaw@${OPENCLAW_VERSION}" && \
+    OPENCLAW_SOURCE="$(npm root -g)/openclaw" && \
+    test -f "${OPENCLAW_SOURCE}/openclaw.mjs" && \
+    mkdir -p /opt && \
+    cp -a "${OPENCLAW_SOURCE}" /opt/openclaw && \
+    printf '%s\n' '#!/bin/sh' "exec /opt/openclaw/openclaw.mjs \"\$@\"" > /usr/local/bin/openclaw && \
+    chmod +x /usr/local/bin/openclaw && \
+    /usr/local/bin/openclaw --version > /tmp/openclaw-version && \
+    find /opt/openclaw -name '*.map' -print | xargs rm -f 2>/dev/null || true
+
+# ── Stage 2: Install HermesAgent (Python/uv) ──
+FROM ubuntu:22.04 AS hermesagent-builder
+ENV DEBIAN_FRONTEND=noninteractive
+ARG HERMES_AGENT_BRANCH=main
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git software-properties-common gnupg dirmngr build-essential libffi-dev; \
+    if ! command -v python3.11 >/dev/null 2>&1; then \
+        add-apt-repository -y ppa:deadsnakes/ppa; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends python3.11 python3.11-dev python3.11-venv; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+RUN set -eux; \
+    git clone --depth 1 --branch "${HERMES_AGENT_BRANCH}" \
+        https://github.com/NousResearch/hermes-agent.git /opt/hermesagent; \
+    cd /opt/hermesagent; \
+    uv venv venv --python python3.11; \
+    VIRTUAL_ENV=/opt/hermesagent/venv uv pip install -e ".[all]"; \
+    /opt/hermesagent/venv/bin/hermes --version; \
+    rm -rf /root/.cache /tmp/* /opt/hermesagent/.git
+
+# ── Stage 3: Runtime ──
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN set -eux; \
+    retry_apt() { \
+      for attempt in 1 2 3; do \
+        if "$@"; then return 0; fi; \
+        echo "==> apt failed attempt ${attempt}: $*"; \
+        dpkg --configure -a || true; \
+        apt-get -f install -y || true; \
+        sleep 5; \
+      done; \
+      return 1; \
+    }; \
+    retry_apt apt-get update; \
+    retry_apt apt-get install -y --no-install-recommends \
+        ca-certificates curl git gnupg software-properties-common dirmngr; \
+    mkdir -p /etc/apt/keyrings; \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list; \
+    retry_apt apt-get update; \
+    retry_apt apt-get install -y --no-install-recommends \
+        nodejs make tzdata tini wget jq ripgrep procps lsof ffmpeg golang; \
+    if ! command -v python3.11 >/dev/null 2>&1; then \
+      add-apt-repository -y ppa:deadsnakes/ppa; \
+      retry_apt apt-get update; \
+      retry_apt apt-get install -y --no-install-recommends python3.11 python3.11-venv; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# OCI metadata
+ARG BUILD_VERSION=0.0.0
+ARG BUILD_REVISION=unknown
+ARG BUILD_DATE=unknown
+ARG CLAWDECKX_VERSION=unknown
+ARG HERMESDECKX_VERSION=unknown
+ARG OPENCLAW_VERSION=latest
+ARG HERMES_AGENT_VERSION=latest
+LABEL org.opencontainers.image.title="DeckXHub" \
+      org.opencontainers.image.description="Unified Docker image: ClawDeckX + HermesDeckX with OpenClaw and HermesAgent" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.url="https://github.com/KnowHunters/DeckXHub" \
+      org.opencontainers.image.source="https://github.com/KnowHunters/DeckXHub" \
+      org.opencontainers.image.licenses="MIT" \
+      ai.deckxhub.clawdeckx.version="${CLAWDECKX_VERSION}" \
+      ai.deckxhub.hermesdeckx.version="${HERMESDECKX_VERSION}" \
+      ai.deckxhub.openclaw.version="${OPENCLAW_VERSION}" \
+      ai.deckxhub.hermesagent.version="${HERMES_AGENT_VERSION}"
+
+WORKDIR /app
+
+# Copy upstream runtimes from builder stages
+COPY --from=openclaw-builder /opt/openclaw /opt/openclaw
+COPY --from=openclaw-builder /usr/local/bin/openclaw /usr/local/bin/openclaw
+COPY --from=hermesagent-builder /opt/hermesagent /opt/hermesagent
+
+# Copy pre-built DeckX binaries (from CI artifacts)
+ARG CLAWDECKX_BINARY=dist/clawdeckx
+ARG HERMESDECKX_BINARY=dist/hermesdeckx
+COPY ${CLAWDECKX_BINARY} ./clawdeckx
+COPY ${HERMESDECKX_BINARY} ./hermesdeckx
+
+# Copy entrypoint
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Create data directories and symlinks
+RUN mkdir -p \
+        /data/clawdeckx /data/openclaw/npm /data/openclaw/state /data/openclaw/logs \
+        /data/openclaw/home /data/openclaw/bootstrap \
+        /data/hermesdeckx /data/hermesagent/state /data/hermesagent/logs \
+        /data/hermesagent/home /data/hermesagent/bootstrap \
+        /data/runtime/clawdeckx /data/runtime/openclaw \
+        /data/runtime/hermesdeckx /data/runtime/hermesagent && \
+    chmod +x ./clawdeckx ./hermesdeckx /app/docker-entrypoint.sh && \
+    ln -sf /app/clawdeckx /usr/local/bin/clawdeckx && \
+    ln -sf /app/hermesdeckx /usr/local/bin/hermesdeckx && \
+    ln -sf /opt/hermesagent/venv/bin/hermes /usr/local/bin/hermes
+
+VOLUME ["/data"]
+
+EXPOSE 18788 18789 19788 8642
+
+ENV INSTALL_MODE=both \
+    OCD_DB_SQLITE_PATH=/data/clawdeckx/ClawDeckX.db \
+    OCD_LOG_FILE=/data/clawdeckx/ClawDeckX.log \
+    OCD_CONFIG=/data/clawdeckx/ClawDeckX.json \
+    OPENCLAW_HOME=/data/openclaw/home \
+    OPENCLAW_STATE_DIR=/data/openclaw/state \
+    OPENCLAW_CONFIG_PATH=/data/openclaw/state/openclaw.json \
+    NPM_CONFIG_PREFIX=/data/openclaw/npm \
+    OCD_GATEWAY_LOG=/data/openclaw/logs/gateway.log \
+    OCD_SETUP_INSTALL_LOG=/data/openclaw/logs/install.log \
+    OCD_SETUP_DOCTOR_LOG=/data/openclaw/logs/doctor.log \
+    OCD_RUNTIME_DIR=/data/runtime \
+    OCD_BIND=0.0.0.0 \
+    OCD_PORT=18788 \
+    OHD_DB_SQLITE_PATH=/data/hermesdeckx/HermesDeckX.db \
+    OHD_LOG_FILE=/data/hermesdeckx/HermesDeckX.log \
+    OHD_CONFIG=/data/hermesdeckx/HermesDeckX.json \
+    HERMES_HOME=/data/hermesagent/home \
+    HERMES_AGENT_STATE_DIR=/data/hermesagent/state \
+    OHD_GATEWAY_LOG=/data/hermesagent/logs/gateway.log \
+    OHD_SETUP_INSTALL_LOG=/data/hermesagent/logs/install.log \
+    OHD_SETUP_DOCTOR_LOG=/data/hermesagent/logs/doctor.log \
+    OHD_RUNTIME_DIR=/data/runtime \
+    OHD_BIND=0.0.0.0 \
+    OHD_PORT=19788 \
+    VIRTUAL_ENV=/opt/hermesagent/venv \
+    PATH=/data/openclaw/npm/bin:/opt/hermesagent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    TZ=UTC
+
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -sf http://localhost:${OCD_PORT:-18788}/api/v1/health || \
+        curl -sf http://localhost:${OHD_PORT:-19788}/api/v1/health || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
+CMD ["/app/docker-entrypoint.sh"]
