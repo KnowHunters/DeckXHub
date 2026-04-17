@@ -683,15 +683,38 @@ docker_install_core() {
     fi
     echo ""
 
-    # First-time login hint
-    echo -e "${YELLOW}🔐 First-time login / 首次登录：${NC}"
-    echo -e "  View initial admin credentials in container logs:"
-    echo -e "  查看容器日志中的初始管理员账户信息："
+    # First-time login credentials (read from container bootstrap files)
+    echo -e "${YELLOW}🔐 Initial Login Credentials / 初始登录凭据：${NC}"
     echo ""
-    echo "────────────────────────────────────────"
-    $compose_run logs --tail 50 2>/dev/null || true
-    echo "────────────────────────────────────────"
-    echo ""
+    local _cred_shown=false
+    for _product in clawdeckx hermesdeckx; do
+        local _cred
+        _cred=$(docker exec "$instance_name" cat "/data/${_product}/bootstrap/credentials" 2>/dev/null || true)
+        if [ -n "$_cred" ]; then
+            local _user _pass _label
+            _user=$(echo "$_cred" | sed -n '1p')
+            _pass=$(echo "$_cred" | sed -n '2p')
+            case "$_product" in
+                clawdeckx)   _label="ClawDeckX" ;;
+                hermesdeckx) _label="HermesDeckX" ;;
+            esac
+            echo -e "  ${CYAN}${_label}:${NC}"
+            echo -e "    Username / 用户名:  ${BOLD}${_user}${NC}"
+            echo -e "    Password / 密码:    ${BOLD}${_pass}${NC}"
+            echo ""
+            _cred_shown=true
+        fi
+    done
+    if [ "$_cred_shown" = false ]; then
+        echo -e "  ${YELLOW}Credentials not found. Check container logs:${NC}"
+        echo -e "  ${YELLOW}未找到凭据，请查看容器日志：${NC}"
+        echo -e "  ${GREEN}$compose_run logs --tail 50${NC}"
+        echo ""
+    else
+        echo -e "  ${YELLOW}⚠ Please change the default password after first login!${NC}"
+        echo -e "  ${YELLOW}⚠ 请在首次登录后修改默认密码！${NC}"
+        echo ""
+    fi
 
     # Management commands
     echo -e "${YELLOW}Management commands / 管理命令：${NC}"

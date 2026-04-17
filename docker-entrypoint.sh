@@ -23,6 +23,28 @@ write_bootstrap() {
     echo "$value" > "$dir/$key"
 }
 
+# --- Generate initial admin credentials (first run only) ---
+# Each product gets its own credentials file in /data/<product>/bootstrap/
+# install.sh reads these after health check to display to the user.
+generate_credentials() {
+    local product="$1"
+    local cred_file="/data/${product}/bootstrap/credentials"
+    if [ -f "$cred_file" ]; then
+        # Already generated — read existing
+        INIT_USER=$(sed -n '1p' "$cred_file")
+        INIT_PASS=$(sed -n '2p' "$cred_file")
+        return 0
+    fi
+    # First run — generate random password (12 chars alphanumeric)
+    INIT_USER="admin"
+    INIT_PASS=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 12)
+    # Persist so we don't regenerate on container restart
+    mkdir -p "/data/${product}/bootstrap"
+    printf '%s\n%s\n' "$INIT_USER" "$INIT_PASS" > "$cred_file"
+    chmod 600 "$cred_file"
+    echo "[DeckXHub] Generated initial admin credentials for ${product}"
+}
+
 # --- Ensure data directories ---
 ensure_dirs() {
     mkdir -p /data/clawdeckx /data/openclaw/npm /data/openclaw/state \
@@ -182,9 +204,17 @@ start_clawdeckx() {
 
     write_bootstrap "clawdeckx" "status" "starting"
 
-    "$bin" \
+    # Generate initial admin credentials on first run
+    generate_credentials "clawdeckx"
+    local cred_args=""
+    if [ -n "$INIT_USER" ] && [ -n "$INIT_PASS" ]; then
+        cred_args="--user $INIT_USER --password $INIT_PASS"
+    fi
+
+    $bin \
         --port "$port" \
-        --host "$bind" &
+        --host "$bind" \
+        $cred_args &
     local pid=$!
     echo "[DeckXHub] ClawDeckX started (PID $pid, port $port)"
     write_bootstrap "clawdeckx" "pid" "$pid"
@@ -212,9 +242,17 @@ start_hermesdeckx() {
 
     write_bootstrap "hermesdeckx" "status" "starting"
 
-    "$bin" \
+    # Generate initial admin credentials on first run
+    generate_credentials "hermesdeckx"
+    local cred_args=""
+    if [ -n "$INIT_USER" ] && [ -n "$INIT_PASS" ]; then
+        cred_args="--user $INIT_USER --password $INIT_PASS"
+    fi
+
+    $bin \
         --port "$port" \
-        --host "$bind" &
+        --host "$bind" \
+        $cred_args &
     local pid=$!
     echo "[DeckXHub] HermesDeckX started (PID $pid, port $port)"
     write_bootstrap "hermesdeckx" "pid" "$pid"
