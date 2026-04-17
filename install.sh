@@ -970,14 +970,46 @@ manage_deployment() {
                 ;;
             2)
                 if [ "$is_running" = true ]; then
-                    docker stop "$container"; echo -e "${GREEN}✓ Stopped${NC}"
+                    echo -e "${BLUE}Stopping container... / 正在停止容器...${NC}"
+                    docker stop "$container"
+                    echo -e "${GREEN}✓ Stopped / 已停止${NC}"
                 else
-                    docker start "$container"; echo -e "${GREEN}✓ Started${NC}"
+                    echo -e "${BLUE}Starting container... / 正在启动容器...${NC}"
+                    docker start "$container"
+                    sleep 2
+                    echo -e "${GREEN}✓ Started / 已启动${NC}"
+                    local _ports
+                    _ports=$(docker port "$container" 2>/dev/null | sed 's|.*:||; s|/.*||' | sort -u)
+                    for _p in $_ports; do
+                        print_access_urls "$_p" "$container"
+                    done
                 fi
                 ;;
-            3) docker restart "$container"; echo -e "${GREEN}✓ Restarted${NC}" ;;
-            4) docker logs --tail 80 "$container" ;;
-            5) docker ps -a --filter "name=^${container}$" ;;
+            3)
+                echo -e "${BLUE}Restarting container... / 正在重启容器...${NC}"
+                docker restart "$container"
+                echo -e "${GREEN}✓ Restarted / 已重启${NC}"
+                ;;
+            4)
+                echo ""
+                echo -e "${CYAN}Recent logs / 最近日志：${NC}"
+                echo "────────────────────────────────────────"
+                docker logs --tail 80 "$container"
+                echo "────────────────────────────────────────"
+                ;;
+            5)
+                echo ""
+                docker ps -a --filter "name=^${container}$"
+                echo ""
+                if [ "$is_running" = true ]; then
+                    local _ports
+                    _ports=$(docker port "$container" 2>/dev/null | sed 's|.*:||; s|/.*||' | sort -u)
+                    for _p in $_ports; do
+                        print_access_urls "$_p" "$container"
+                        echo ""
+                    done
+                fi
+                ;;
             6)
                 # Full uninstall flow (no compose file)
                 echo ""
