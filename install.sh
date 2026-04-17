@@ -733,10 +733,13 @@ manage_deployment() {
     local docker_img
     docker_img=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null || echo "unknown")
 
-    # Read port(s) from compose file
+    # Read port(s) from compose file, fallback to Docker inspect
     local compose_ports=""
     if [ -n "$compose_file" ] && [ -f "$compose_file" ]; then
         compose_ports=$(grep -oE '"[0-9]+:[0-9]+"' "$compose_file" 2>/dev/null | tr -d '"' | tr '\n' ' ')
+    fi
+    if [ -z "$compose_ports" ]; then
+        compose_ports=$(docker port "$container" 2>/dev/null | sed 's|.*:||; s|/.*||' | sort -u | tr '\n' ' ')
     fi
 
     echo ""
@@ -949,11 +952,20 @@ manage_deployment() {
         case "$MGMT_CHOICE" in
             1)
                 if [ -n "$docker_img" ] && [ "$docker_img" != "unknown" ]; then
+                    echo ""
+                    echo -e "${BLUE}Pulling latest image: ${docker_img}${NC}"
+                    echo -e "${BLUE}正在拉取最新镜像...${NC}"
                     docker pull "$docker_img"
-                    docker stop "$container" 2>/dev/null || true
-                    docker rm "$container" 2>/dev/null || true
-                    echo -e "${YELLOW}Container removed. Re-run install to recreate.${NC}"
-                    echo -e "${YELLOW}容器已删除。请重新运行安装脚本来重建。${NC}"
+                    echo ""
+                    echo -e "${YELLOW}⚠ No compose file found. Container must be recreated manually.${NC}"
+                    echo -e "${YELLOW}  未找到 compose 文件。需要手动重建容器。${NC}"
+                    echo ""
+                    echo -e "${CYAN}Recommended: re-run the installer to deploy a new instance:${NC}"
+                    echo -e "${CYAN}建议：重新运行安装脚本以部署新实例：${NC}"
+                    echo ""
+                    echo -e "  ${GREEN}curl -fsSL https://raw.githubusercontent.com/KnowHunters/DeckXHub/main/install.sh | bash${NC}"
+                else
+                    echo -e "${RED}Cannot determine image name / 无法确定镜像名称${NC}"
                 fi
                 ;;
             2)
@@ -967,13 +979,75 @@ manage_deployment() {
             4) docker logs --tail 80 "$container" ;;
             5) docker ps -a --filter "name=^${container}$" ;;
             6)
-                echo -n "Are you sure? / 确定卸载？ [y/N] "
+                # Full uninstall flow (no compose file)
+                echo ""
+                echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+                echo -e "${YELLOW}  Uninstall / 卸载: ${container}${NC}"
+                echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+                echo ""
+                echo -e "${CYAN}This will: / 将执行：${NC}"
+                echo "  - Stop and remove the container / 停止并删除容器"
+                echo ""
+
+                # Find volumes attached to this container
+                local container_vols
+                container_vols=$(docker inspect --format '{{ range .Mounts }}{{ .Name }} {{ end }}' "$container" 2>/dev/null || true)
+
+                local remove_volumes=false
+                if [ -n "$container_vols" ]; then
+                    echo -e "${CYAN}Data volumes / 数据卷：${NC}"
+                    for _vn in $container_vols; do
+                        echo -e "  - ${_vn}"
+                    done
+                    echo ""
+                    echo -n "Also remove data volumes? / 同时删除数据卷？ [y/N] "
+                    read -n 1 -r </dev/tty; echo
+                    if [[ $REPLY =~ ^[Yy]$ ]]; then
+                        remove_volumes=true
+                        echo -e "  ${RED}- Data volumes will be removed / 数据卷将被删除${NC}"
+                    fi
+                fi
+
+                local remove_image=false
+                echo -n "Also remove Docker image ($docker_img)? / 同时删除 Docker 镜像？ [y/N] "
                 read -n 1 -r </dev/tty; echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
-                    docker stop "$container" 2>/dev/null || true
-                    docker rm "$container" 2>/dev/null || true
-                    echo -e "${GREEN}✓ Removed / 已卸载${NC}"
+                    remove_image=true
+                    echo -e "  ${RED}- Docker image will be removed / Docker 镜像将被删除${NC}"
                 fi
+
+                echo ""
+                echo -n -e "${RED}Confirm uninstall? / 确认卸载？ [y/N] ${NC}"
+                read -n 1 -r </dev/tty; echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}Uninstall cancelled / 卸载已取消${NC}"
+                    exit 0
+                fi
+
+                echo ""
+                echo -e "${BLUE}Stopping and removing container... / 正在停止并删除容器...${NC}"
+                docker stop "$container" 2>/dev/null || true
+                docker rm "$container" 2>/dev/null || true
+                echo -e "${GREEN}✓ Container removed / 容器已删除${NC}"
+
+                if [ "$remove_volumes" = true ] && [ -n "$container_vols" ]; then
+                    echo -e "${BLUE}Removing data volumes... / 正在删除数据卷...${NC}"
+                    for _vn in $container_vols; do
+                        docker volume rm "$_vn" 2>/dev/null || true
+                    done
+                    echo -e "${GREEN}✓ Volumes removed / 数据卷已删除${NC}"
+                fi
+
+                if [ "$remove_image" = true ]; then
+                    echo -e "${BLUE}Removing Docker image... / 正在删除 Docker 镜像...${NC}"
+                    docker rmi "$docker_img" 2>/dev/null || true
+                    echo -e "${GREEN}✓ Image removed / 镜像已删除${NC}"
+                fi
+
+                echo ""
+                echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+                echo -e "${GREEN}  ✅ Uninstall complete! / 卸载完成！${NC}"
+                echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
                 ;;
             7) exec bash "$SELF_SCRIPT" "$@" ;;
             *) echo -e "${RED}Invalid choice / 选择无效${NC}" ;;
