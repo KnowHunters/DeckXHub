@@ -391,9 +391,9 @@ docker_install() {
     download_with_fallback "$DP_COMPOSE_URL" "$DP_COMPOSE_URL_CN" "$DP_COMPOSE_FILE"
     echo -e "${GREEN}✓ Downloaded: ${DP_COMPOSE_FILE}${NC}"
 
-    # Port auto-detection and customization
+    # Port configuration — interactive
     echo ""
-    echo -e "${CYAN}Detecting available ports...${NC}"
+    echo -e "${CYAN}═══ Port Configuration / 端口配置 ═══${NC}"
     local host_ports=()
     local idx=0
     for mapping in "${DP_PORT_MAPPINGS[@]}"; do
@@ -402,13 +402,33 @@ docker_install() {
         local label="${DP_PORT_LABELS[$idx]}"
 
         find_available_port "$default_host"
-        local chosen_port=$FOUND_PORT
+        local suggested_port=$FOUND_PORT
 
-        if [ "$chosen_port" -ne "$default_host" ]; then
-            echo -e "${YELLOW}  ${label}: default ${default_host} occupied → using ${chosen_port}${NC}"
-        else
-            echo -e "${GREEN}  ✓ ${label}: port ${chosen_port}${NC}"
+        if [ "$suggested_port" -ne "$default_host" ]; then
+            echo -e "${YELLOW}  ⚠ ${label}: default port ${default_host} is occupied${NC}"
+            echo -e "${YELLOW}    ${label}: 默认端口 ${default_host} 已被占用${NC}"
         fi
+
+        echo -n "  ${label} port / 端口 [${suggested_port}]: "
+        read -r user_port </dev/tty
+        user_port="${user_port:-$suggested_port}"
+
+        # Validate port number
+        while ! echo "$user_port" | grep -qE '^[0-9]+$' || [ "$user_port" -lt 1 ] || [ "$user_port" -gt 65535 ]; do
+            echo -e "${RED}  Invalid port. Enter 1-65535 / 端口无效，请输入 1-65535${NC}"
+            echo -n "  ${label} port / 端口 [${suggested_port}]: "
+            read -r user_port </dev/tty
+            user_port="${user_port:-$suggested_port}"
+        done
+
+        # Warn if chosen port is occupied
+        if ! check_port_available "$user_port"; then
+            echo -e "${YELLOW}  ⚠ Port ${user_port} is in use — container may fail to start${NC}"
+            echo -e "${YELLOW}    端口 ${user_port} 已被占用 — 容器可能无法启动${NC}"
+        fi
+
+        local chosen_port="$user_port"
+        echo -e "${GREEN}  ✓ ${label}: port ${chosen_port}${NC}"
 
         # Update compose file with chosen port
         if [ "$chosen_port" -ne "$default_host" ]; then
@@ -418,6 +438,7 @@ docker_install() {
         host_ports+=("$chosen_port")
         idx=$((idx + 1))
     done
+    echo ""
 
     # Apply image mirror if needed
     apply_image_mirror "$DP_COMPOSE_FILE" "$DP_ORIGINAL_IMAGE"
