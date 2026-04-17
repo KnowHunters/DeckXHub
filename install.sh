@@ -598,12 +598,12 @@ detect_deployments
 if [ ${#DETECTED_DEPLOYMENTS[@]} -gt 0 ] || [ ${#DETECTED_COMPOSE_FILES[@]} -gt 0 ]; then
     echo -e "${CYAN}Detected deployments / 检测到的部署：${NC}"
     for d in "${DETECTED_DEPLOYMENTS[@]}"; do
-        local status; status=$(docker inspect --format='{{.State.Status}}' "$d" 2>/dev/null || echo "unknown")
-        local img; img=$(docker inspect --format='{{.Config.Image}}' "$d" 2>/dev/null || echo "unknown")
+        status=$(docker inspect --format='{{.State.Status}}' "$d" 2>/dev/null || echo "unknown")
+        img=$(docker inspect --format='{{.Config.Image}}' "$d" 2>/dev/null || echo "unknown")
         echo -e "  🐳 ${BOLD}${d}${NC}  [${GREEN}${status}${NC}]  ${img}"
     done
     for cf in "${DETECTED_COMPOSE_FILES[@]}"; do
-        local already_shown=false
+        already_shown=false
         for d in "${DETECTED_DEPLOYMENTS[@]}"; do
             if echo "$cf" | grep -q "$d" 2>/dev/null; then already_shown=true; break; fi
         done
