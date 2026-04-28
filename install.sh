@@ -35,6 +35,24 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ==============================================================================
+# Input helpers
+# ==============================================================================
+# read_choice <varname> <max>
+#   Unified menu input:
+#     - max <= 9   → single-keystroke (no Enter needed)
+#     - max >= 10  → full line (Enter required, supports multi-digit)
+read_choice() {
+    local __var="$1" max="$2" input
+    if [ "${max:-0}" -le 9 ] 2>/dev/null; then
+        IFS= read -n 1 -r input </dev/tty
+        echo
+    else
+        IFS= read -r input </dev/tty
+    fi
+    printf -v "$__var" '%s' "$input"
+}
+
+# ==============================================================================
 # Deploy Profiles
 # ==============================================================================
 # set_deploy_profile <mode>
@@ -830,7 +848,7 @@ manage_deployment() {
     echo "  7) Back / 返回"
     echo ""
     echo -n "Choice / 选择 [1-7]: "
-    read -n 1 -r MGMT_CHOICE </dev/tty; echo
+    read_choice MGMT_CHOICE 7
 
     if [ -n "$compose_file" ] && [ -f "$compose_file" ] && check_docker_compose; then
         local cr="$COMPOSE_CMD -f $compose_file -p $project"
@@ -1221,7 +1239,7 @@ else
 fi
 echo ""
 echo -n "Enter your choice [1-$MENU_MAX] / 输入选择 [1-$MENU_MAX]: "
-read -r MAIN_CHOICE </dev/tty
+read_choice MAIN_CHOICE "$MENU_MAX"
 
 case "$MAIN_CHOICE" in
     1)
