@@ -644,31 +644,88 @@ docker_install_core() {
     echo -e "${BLUE}Starting container... / 正在启动容器...${NC}"
     $compose_run up -d
 
-    # Wait for health check
+    # Wait for health check.
+    # First boot pulls plugins, runs migrations, generates credentials — on
+    # low-spec machines (1-2 vCPU / 2GB RAM) this can exceed 10 min, especially
+    # in `both` mode where 4 components start simultaneously.
+    # Override by exporting DECKXHUB_HEALTH_TIMEOUT before running install.sh.
+    local max_wait="${DECKXHUB_HEALTH_TIMEOUT:-900}"
     echo ""
-    echo -e "${CYAN}Waiting for services to become ready (first boot may take ~5 min)..."
-    echo -e "等待服务就绪（首次启动可能需要约 5 分钟）...${NC}"
-    local max_wait=300 waited=0
-    while [ $waited -lt $max_wait ]; do
-        local any_ok=false
-        for hp in "${host_ports[@]}"; do
-            if curl -sf "http://localhost:${hp}/api/v1/health" >/dev/null 2>&1; then
-                any_ok=true; break
-            fi
-        done
-        if [ "$any_ok" = true ]; then break; fi
-        sleep 2; waited=$((waited + 2))
-        if [ $((waited % 10)) -eq 0 ]; then printf "\r  %ds / %ds ..." "$waited" "$max_wait"; fi
-    done
-    printf "\r                          \r"
+    local total_min=$((max_wait / 60))
+    echo -e "${CYAN}Waiting for services to become ready..."
+    echo -e "  Low-spec machines may take 5-${total_min} min on first boot."
+    echo -e "  Override with DECKXHUB_HEALTH_TIMEOUT=<seconds> to extend.${NC}"
+    echo -e "${CYAN}等待服务就绪..."
+    echo -e "  低配机器首次启动可能需要 5-${total_min} 分钟。"
+    echo -e "  可通过环境变量 DECKXHUB_HEALTH_TIMEOUT=<秒数> 调整超时。${NC}"
 
-    if [ $waited -ge $max_wait ]; then
-        echo -e "${YELLOW}⚠ Services are still starting. Check status with:"
-        echo -e "  服务仍在启动中，请用以下命令检查状态：${NC}"
-        echo -e "  ${GREEN}$compose_run ps${NC}"
+    local waited=0 hint_shown=false ready_count=0 total=${#host_ports[@]}
+    local -a port_status=()
+    for ((i = 0; i < total; i++)); do port_status[i]="…"; done
+
+    while [ $waited -lt $max_wait ]; do
+        # Early exit: container died
+        local cstate
+        cstate=$(docker inspect --format='{{.State.Status}}' "$instance_name" 2>/dev/null || echo "missing")
+        if [ "$cstate" != "running" ] && [ "$cstate" != "restarting" ] && [ "$cstate" != "created" ]; then
+            printf "\r%-78s\r" ""
+            echo -e "${RED}✗ Container '$instance_name' is no longer running (state: $cstate)${NC}"
+            echo -e "${RED}  容器已退出，请查看日志：${NC}"
+            echo -e "  ${GREEN}$compose_run logs --tail 80${NC}"
+            break
+        fi
+
+        ready_count=0
+        local idx=0
+        for hp in "${host_ports[@]}"; do
+            if curl -sf -m 2 "http://localhost:${hp}/api/v1/health" >/dev/null 2>&1; then
+                port_status[idx]="✓"
+                ready_count=$((ready_count + 1))
+            else
+                port_status[idx]="…"
+            fi
+            idx=$((idx + 1))
+        done
+
+        # All ports healthy → done
+        if [ $ready_count -eq $total ]; then break; fi
+
+        # Progress line: "  120s / 900s  •  18700 ✓  19700 …"
+        local status_str=""
+        idx=0
+        for hp in "${host_ports[@]}"; do
+            status_str="${status_str}  ${hp} ${port_status[idx]}"
+            idx=$((idx + 1))
+        done
+        printf "\r  %ds / %ds %s    " "$waited" "$max_wait" "$status_str"
+
+        # Halfway hint: tell user how to peek at logs without aborting
+        if [ "$hint_shown" = false ] && [ $waited -ge $((max_wait / 2)) ]; then
+            hint_shown=true
+            printf "\r%-78s\r" ""
+            echo -e "${YELLOW}  Still starting. To watch progress in another terminal:"
+            echo -e "  仍在启动。在另一个终端可实时查看进度：${NC}"
+            echo -e "  ${GREEN}$compose_run logs -f --tail 30${NC}"
+            echo ""
+        fi
+
+        sleep 3
+        waited=$((waited + 3))
+    done
+
+    printf "\r%-78s\r" ""
+
+    if [ $ready_count -eq $total ] && [ $total -gt 0 ]; then
+        echo -e "${GREEN}✓ All services are ready! / 全部服务已就绪！${NC}"
+    elif [ $ready_count -gt 0 ]; then
+        echo -e "${YELLOW}⚠ Partial readiness: ${ready_count}/${total} services healthy."
+        echo -e "  部分就绪：${ready_count}/${total} 个服务已健康，其余仍在启动。${NC}"
         echo -e "  ${GREEN}$compose_run logs --tail 30${NC}"
     else
-        echo -e "${GREEN}✓ Services are ready! / 服务已就绪！${NC}"
+        echo -e "${YELLOW}⚠ Services are still starting after ${max_wait}s. Check status with:"
+        echo -e "  服务在 ${max_wait} 秒内仍未就绪，请用以下命令检查状态：${NC}"
+        echo -e "  ${GREEN}$compose_run ps${NC}"
+        echo -e "  ${GREEN}$compose_run logs --tail 50${NC}"
     fi
 
     # Summary
