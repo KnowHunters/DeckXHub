@@ -1209,9 +1209,11 @@ fi
 echo -e "${YELLOW}What would you like to do? / 您想做什么？${NC}"
 echo ""
 echo -e "  ${BOLD}── Install / 安装 ──${NC}"
-echo "  1) ClawDeckX + OpenClaw          (image: knowhunters/clawdeckx)"
-echo "  2) HermesDeckX + HermesAgent     (image: knowhunters/hermesdeckx)"
-echo "  3) Both — unified DeckXHub       (image: knowhunters/deckxhub)"
+echo "  1) ClawDeckX + OpenClaw         standalone / 独立镜像  (knowhunters/clawdeckx)"
+echo "  2) HermesDeckX + HermesAgent    standalone / 独立镜像  (knowhunters/hermesdeckx)"
+echo "  3) All-in-one (1 + 2 in one container) / 四合一单镜像  (knowhunters/deckxhub)"
+echo -e "     ${CYAN}↳ A single container running ClawDeckX + OpenClaw + HermesDeckX + HermesAgent"
+echo -e "       单个容器同时运行以上四个组件，非分别安装两个镜像${NC}"
 echo ""
 
 HAS_EXISTING=false
