@@ -63,12 +63,16 @@ services:
       OHD_RUNTIME_DIR: /data/runtime
       VIRTUAL_ENV: /opt/hermesagent/venv
       TZ: UTC
+
+      # ── Shared (collaboration between ClawDeckX/OpenClaw and HermesDeckX/HermesAgent) ──
+      DECKXHUB_SHARED_DIR: /data/shared
+      WORKSPACE_DIR: /data/shared/workspace
     networks:
       - deckxhub-net
     healthcheck:
-      test: >-
-        curl -sf http://localhost:$${OCD_PORT:-18788}/api/v1/health ||
-        curl -sf http://localhost:$${OHD_PORT:-19788}/api/v1/health || exit 1
+      # Mode-aware: both 模式要求两端都健康（&&），单模式只查对应端口。
+      # 由镜像内 /app/healthcheck.sh 根据 INSTALL_MODE 判断。
+      test: ["CMD", "/app/healthcheck.sh"]
       interval: 30s
       timeout: 5s
       start_period: 60s

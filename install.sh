@@ -1213,7 +1213,7 @@ echo "  1) ClawDeckX + OpenClaw         standalone / 独立镜像  (knowhunters/
 echo "  2) HermesDeckX + HermesAgent    standalone / 独立镜像  (knowhunters/hermesdeckx)"
 echo "  3) All-in-one (1 + 2 in one container) / 四合一单镜像  (knowhunters/deckxhub)"
 echo -e "     ${CYAN}↳ A single container running ClawDeckX + OpenClaw + HermesDeckX + HermesAgent"
-echo -e "       单个容器同时运行以上四个组件，非分别安装两个镜像${NC}"
+echo -e "       单个容器同时运行以上四个组件${NC}"
 echo ""
 
 HAS_EXISTING=false

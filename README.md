@@ -88,6 +88,34 @@ docker compose up -d          # Unified image, both components
 └───────────────────────────────────────────────────┘
 ```
 
+## Shared Collaboration Directories (unified image only)
+
+The unified `deckxhub` image creates a shared root at `/data/shared/` so the
+two products can collaborate on the same workspace, credentials, skills and
+knowledge. None of these are required — they're auto-created and idempotent.
+
+| Path | Purpose |
+|------|---------|
+| `/data/shared/workspace/`        | User project files. Exposed as `$WORKSPACE_DIR`. |
+| `/data/shared/credentials/.env`  | API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …). Sourced on startup and inherited by all four processes. An `.env.example` is seeded on first boot. |
+| `/data/shared/skills/`           | Custom skills. Auto-symlinked into both `OPENCLAW_HOME/skills` and `HERMES_HOME/skills`. |
+| `/data/shared/knowledge/`        | Knowledge base. Auto-symlinked into both agents' `home/knowledge`. |
+| `/data/shared/mcp/`              | Shared MCP server manifests (mount point for future wiring). |
+
+The symlink helper never overwrites pre-existing data: if either agent's
+`home/skills` already contains files, the symlink is skipped and a hint is
+printed. Move existing files into `/data/shared/skills/` to opt in.
+
+To edit on the host, mount the shared dir as a bind volume:
+
+```bash
+docker run -d --name deckxhub \
+  -p 18700:18788 -p 19700:19788 \
+  -v deckxhub-data:/data \
+  -v $HOME/deckxhub-shared:/data/shared \
+  knowhunters/deckxhub:latest
+```
+
 ## INSTALL_MODE (unified image only)
 
 The `INSTALL_MODE` environment variable controls which components start in the unified `deckxhub` image:

@@ -31,9 +31,69 @@ ensure_dirs() {
              /data/hermesdeckx /data/hermesagent/state /data/hermesagent/logs \
              /data/hermesagent/home /data/hermesagent/bootstrap \
              /data/runtime/clawdeckx /data/runtime/openclaw \
-             /data/runtime/hermesdeckx /data/runtime/hermesagent
+             /data/runtime/hermesdeckx /data/runtime/hermesagent \
+             /data/shared/workspace /data/shared/credentials \
+             /data/shared/skills /data/shared/knowledge /data/shared/mcp
 }
 ensure_dirs
+
+# ==============================================================================
+# Shared workspace / credentials / skills / knowledge wiring
+# ==============================================================================
+# /data/shared/                   ↔  共享根目录（DECKXHUB_SHARED_DIR）
+#   workspace/                    用户代码/项目，通过 WORKSPACE_DIR 暴露给两边
+#   credentials/.env              共享 API Key（OPENAI_API_KEY 等），entrypoint 启动时 source
+#   skills/                       自定义 skill — 自动 symlink 到两个 agent 的 home/skills
+#   knowledge/                    知识库 — 自动 symlink 到两个 agent 的 home/knowledge
+#   mcp/mcp.json                  MCP Server 共享清单（可选，按需读取）
+# ==============================================================================
+
+# --- Source shared credentials (.env) so all child processes inherit ---
+SHARED_ENV="/data/shared/credentials/.env"
+if [ -f "$SHARED_ENV" ]; then
+    echo "[DeckXHub] Loading shared credentials from $SHARED_ENV"
+    set -a
+    # shellcheck disable=SC1090
+    . "$SHARED_ENV"
+    set +a
+else
+    # Seed an example file on first boot so users know where to drop keys
+    cat > "$SHARED_ENV.example" << 'ENVEX'
+# DeckXHub shared credentials — rename to ".env" to activate.
+# Loaded on container startup and exported to ClawDeckX, OpenClaw,
+# HermesDeckX and HermesAgent processes.
+# OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...
+# GOOGLE_API_KEY=...
+ENVEX
+fi
+
+# --- link_shared <src> <dst>: idempotent symlink, never overwrites real data ---
+link_shared() {
+    local src="$1" dst="$2"
+    mkdir -p "$src"
+    if [ -L "$dst" ]; then
+        # Already a symlink — refresh target
+        ln -sfn "$src" "$dst"
+        return 0
+    fi
+    if [ -d "$dst" ] && [ -z "$(ls -A "$dst" 2>/dev/null || true)" ]; then
+        rmdir "$dst" 2>/dev/null || true
+    fi
+    if [ ! -e "$dst" ]; then
+        ln -s "$src" "$dst"
+        echo "[DeckXHub] linked $dst -> $src"
+    else
+        echo "[DeckXHub] skip linking $dst (already has data; move it into $src manually)"
+    fi
+}
+
+# Symlink shared skills + knowledge into each agent's home so plugins/skills
+# authored once are visible to both OpenClaw and HermesAgent.
+link_shared /data/shared/skills    /data/openclaw/home/skills
+link_shared /data/shared/skills    /data/hermesagent/home/skills
+link_shared /data/shared/knowledge /data/openclaw/home/knowledge
+link_shared /data/shared/knowledge /data/hermesagent/home/knowledge
 
 # ==============================================================================
 # OpenClaw Gateway (for ClawDeckX)
@@ -282,6 +342,13 @@ fi
 if [ "$INSTALL_MODE" = "hermesdeckx" ] || [ "$INSTALL_MODE" = "both" ]; then
     echo "    HermesDeckX:  http://0.0.0.0:${OHD_PORT:-19788}"
 fi
+echo ""
+echo "  Shared / 共享目录 (mount or edit on host):"
+echo "    workspace:    /data/shared/workspace      (\$WORKSPACE_DIR)"
+echo "    credentials:  /data/shared/credentials/.env"
+echo "    skills:       /data/shared/skills         (linked into both agents)"
+echo "    knowledge:    /data/shared/knowledge      (linked into both agents)"
+echo "    mcp:          /data/shared/mcp"
 echo "======================================================================"
 echo ""
 
