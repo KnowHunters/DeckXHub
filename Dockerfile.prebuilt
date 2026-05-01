@@ -128,8 +128,9 @@ ARG HERMESDECKX_BINARY=dist/hermesdeckx
 COPY ${CLAWDECKX_BINARY} ./clawdeckx
 COPY ${HERMESDECKX_BINARY} ./hermesdeckx
 
-# Copy entrypoint
+# Copy entrypoint + healthcheck
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY healthcheck.sh /app/healthcheck.sh
 
 # Create data directories and symlinks
 RUN mkdir -p \
@@ -138,8 +139,10 @@ RUN mkdir -p \
         /data/hermesdeckx /data/hermesagent/state /data/hermesagent/logs \
         /data/hermesagent/home /data/hermesagent/bootstrap \
         /data/runtime/clawdeckx /data/runtime/openclaw \
-        /data/runtime/hermesdeckx /data/runtime/hermesagent && \
-    chmod +x ./clawdeckx ./hermesdeckx /app/docker-entrypoint.sh && \
+        /data/runtime/hermesdeckx /data/runtime/hermesagent \
+        /data/shared/workspace /data/shared/credentials \
+        /data/shared/skills /data/shared/knowledge /data/shared/mcp && \
+    chmod +x ./clawdeckx ./hermesdeckx /app/docker-entrypoint.sh /app/healthcheck.sh && \
     ln -sf /app/clawdeckx /usr/local/bin/clawdeckx && \
     ln -sf /app/hermesdeckx /usr/local/bin/hermesdeckx && \
     ln -sf /opt/hermesagent/venv/bin/hermes /usr/local/bin/hermes
@@ -173,6 +176,8 @@ ENV INSTALL_MODE=both \
     OHD_RUNTIME_DIR=/data/runtime \
     OHD_BIND=0.0.0.0 \
     OHD_PORT=19788 \
+    DECKXHUB_SHARED_DIR=/data/shared \
+    WORKSPACE_DIR=/data/shared/workspace \
     VIRTUAL_ENV=/opt/hermesagent/venv \
     PATH=/data/openclaw/npm/bin:/opt/hermesagent/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     TZ=UTC
@@ -180,8 +185,7 @@ ENV INSTALL_MODE=both \
 STOPSIGNAL SIGTERM
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl -sf http://localhost:${OCD_PORT:-18788}/api/v1/health || \
-        curl -sf http://localhost:${OHD_PORT:-19788}/api/v1/health || exit 1
+    CMD /app/healthcheck.sh
 
 ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["/app/docker-entrypoint.sh"]

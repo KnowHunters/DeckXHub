@@ -104,12 +104,12 @@ start_openclaw_gateway() {
     # Runtime overlay: prefer updated binary from persistent volume
     if [ -f /data/runtime/openclaw/openclaw.mjs ]; then
         echo "[DeckXHub] Using runtime overlay OpenClaw binary"
+        chmod +x /data/runtime/openclaw/openclaw.mjs 2>/dev/null || true
         export OPENCLAW_BIN=/data/runtime/openclaw/openclaw.mjs
     else
         export OPENCLAW_BIN=/usr/local/bin/openclaw
     fi
 
-    # Ensure default config if none exists
     local config_path="${OPENCLAW_CONFIG_PATH:-/data/openclaw/state/openclaw.json}"
     if [ ! -f "$config_path" ]; then
         echo "[DeckXHub] Creating default OpenClaw config at $config_path"
@@ -117,6 +117,7 @@ start_openclaw_gateway() {
         cat > "$config_path" << 'OCJSON'
 {
   "gateway": {
+    "mode": "local",
     "port": 18789,
     "auth": {
       "token": ""
@@ -124,6 +125,18 @@ start_openclaw_gateway() {
   }
 }
 OCJSON
+    elif jq -e '.gateway.mode' "$config_path" >/dev/null 2>&1; then
+        :
+    elif jq -e '.gateway' "$config_path" >/dev/null 2>&1; then
+        echo "[DeckXHub] Adding missing OpenClaw gateway.mode=local to $config_path"
+        local tmp_config
+        tmp_config="$(mktemp)"
+        jq '.gateway.mode = "local"' "$config_path" > "$tmp_config"
+        cat "$tmp_config" > "$config_path"
+        rm -f "$tmp_config"
+    else
+        echo "[DeckXHub] WARNING: OpenClaw config exists but has no gateway object: $config_path"
+        echo "[DeckXHub] OpenClaw may refuse to start until the config is repaired."
     fi
 
     export OPENCLAW_CONFIG_PATH="$config_path"
@@ -167,6 +180,7 @@ start_hermesagent_gateway() {
     # Runtime overlay
     if [ -f /data/runtime/hermesagent/hermes ]; then
         echo "[DeckXHub] Using runtime overlay HermesAgent binary"
+        chmod +x /data/runtime/hermesagent/hermes 2>/dev/null || true
         export HERMES_BIN=/data/runtime/hermesagent/hermes
     else
         export HERMES_BIN=/opt/hermesagent/venv/bin/hermes
