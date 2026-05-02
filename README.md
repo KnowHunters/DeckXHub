@@ -62,6 +62,17 @@ docker run -d --name deckxhub \
   knowhunters/deckxhub:latest
 ```
 
+If other trusted servers need to connect to this host as nodes, also publish
+the matching node/API ports:
+
+```bash
+# ClawDeckX/OpenClaw node access
+-p 18789:18789
+
+# HermesDeckX/HermesAgent API access
+-p 18642:8642
+```
+
 ### Docker Compose (Manual)
 
 ```bash
@@ -131,9 +142,19 @@ The `INSTALL_MODE` environment variable controls which components start in the u
 | Service | Container Port | Default Host Port |
 |---------|---------------|-------------------|
 | ClawDeckX Web UI | 18788 | 18700 |
-| OpenClaw Gateway | 18789 | (internal) |
+| OpenClaw Gateway | 18789 | internal by default; optional 18789 |
 | HermesDeckX Web UI | 19788 | 19700 |
-| HermesAgent API | 8642 | (internal) |
+| HermesAgent API | 8642 | internal by default; optional 18642 |
+
+By default, only Web UI ports are published. The installer can optionally expose
+the node/API ports for trusted peers and will pick available host ports by
+deployment mode:
+
+- **ClawDeckX mode** — optional OpenClaw Gateway `18789:18789`
+- **HermesDeckX mode** — optional HermesAgent API `18642:8642`
+- **Both mode** — optional mappings for both services
+
+Expose these ports only behind a firewall, VPN, or authenticated reverse proxy.
 
 ## Management
 

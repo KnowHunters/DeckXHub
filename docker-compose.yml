@@ -17,6 +17,11 @@ services:
       - "18700:18788"
       # HermesDeckX Web UI (host:container)
       - "19700:19788"
+      # Optional node/API access for trusted peers. Uncomment only behind firewall/VPN.
+      # OpenClaw Gateway (host:container)
+      # - "18789:18789"
+      # HermesAgent API (host:container)
+      # - "18642:8642"
     volumes:
       - deckxhub-data:/data
       - deckxhub-runtime:/data/runtime

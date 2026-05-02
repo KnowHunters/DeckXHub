@@ -60,7 +60,7 @@ read_choice() {
 # Sets: DP_NAME, DP_IMAGE, DP_ORIGINAL_IMAGE, DP_CONTAINER,
 #        DP_COMPOSE_URL, DP_COMPOSE_URL_CN, DP_COMPOSE_FILE,
 #        DP_PROJECT, DP_DEFAULT_HOST_PORTS, DP_INTERNAL_PORTS,
-#        DP_HEALTH_PORTS
+#        DP_HEALTH_PORTS, DP_NODE_PORT_LABELS, DP_NODE_PORT_MAPPINGS
 set_deploy_profile() {
     local mode="$1"
     case "$mode" in
@@ -78,6 +78,8 @@ set_deploy_profile() {
             DP_HEALTH_PORTS="18700"
             DP_PORT_LABELS=("ClawDeckX")
             DP_PORT_MAPPINGS=("18700:18788")
+            DP_NODE_PORT_LABELS=("OpenClaw Gateway")
+            DP_NODE_PORT_MAPPINGS=("18789:18789")
             ;;
         hermesdeckx)
             DP_NAME="HermesDeckX + HermesAgent"
@@ -93,6 +95,8 @@ set_deploy_profile() {
             DP_HEALTH_PORTS="19700"
             DP_PORT_LABELS=("HermesDeckX")
             DP_PORT_MAPPINGS=("19700:19788")
+            DP_NODE_PORT_LABELS=("HermesAgent API")
+            DP_NODE_PORT_MAPPINGS=("18642:8642")
             ;;
         both)
             DP_NAME="DeckXHub (ClawDeckX + HermesDeckX)"
@@ -108,6 +112,8 @@ set_deploy_profile() {
             DP_HEALTH_PORTS="18700 19700"
             DP_PORT_LABELS=("ClawDeckX" "HermesDeckX")
             DP_PORT_MAPPINGS=("18700:18788" "19700:19788")
+            DP_NODE_PORT_LABELS=("OpenClaw Gateway" "HermesAgent API")
+            DP_NODE_PORT_MAPPINGS=("18789:18789" "18642:8642")
             ;;
         *)
             echo -e "${RED}Unknown mode: $mode${NC}"; exit 1
@@ -186,6 +192,29 @@ find_available_port() {
     done
     FOUND_PORT=$start
     return 1
+}
+
+add_port_mapping_to_compose() {
+    local compose_file="$1" host_port="$2" container_port="$3" comment="$4"
+    if grep -q "\"${host_port}:${container_port}\"" "$compose_file" 2>/dev/null; then
+        return 0
+    fi
+    awk -v mapping="      - \"${host_port}:${container_port}\"" -v comment="      # ${comment}" '
+        BEGIN { inserted = 0 }
+        /^    ports:[[:space:]]*$/ {
+            print
+            print comment
+            print mapping
+            inserted = 1
+            next
+        }
+        { print }
+        END {
+            if (inserted == 0) {
+                exit 1
+            }
+        }
+    ' "$compose_file" > "${compose_file}.tmp" && mv "${compose_file}.tmp" "$compose_file"
 }
 
 print_access_urls() {
@@ -589,6 +618,63 @@ docker_install_core() {
         idx=$((idx + 1))
     done
 
+    local node_host_ports=()
+    echo ""
+    echo -e "${CYAN}Expose node/API ports? / 是否开放节点/API 端口？${NC}"
+    echo -e "  Web UI ports are enough for normal browser access."
+    echo -e "  If other servers connect here as nodes, expose the matching gateway/API ports."
+    echo -e "  普通浏览器访问只需要 Web UI 端口；其它服务器作为 node 连接时才需要开放。"
+    echo -n "  Expose now? / 现在开放？ [y/N] "
+    read -n 1 -r </dev/tty; echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        idx=0
+        for mapping in "${DP_NODE_PORT_MAPPINGS[@]}"; do
+            local default_host="${mapping%%:*}"
+            local container_port="${mapping##*:}"
+            local label="${DP_NODE_PORT_LABELS[$idx]}"
+
+            find_available_port "$default_host"
+            local suggested_port=$FOUND_PORT
+            for _used in "${assigned_ports[@]}"; do
+                while [ "$suggested_port" = "$_used" ]; do
+                    find_available_port $((suggested_port + 1))
+                    suggested_port=$FOUND_PORT
+                done
+            done
+
+            if [ "$suggested_port" -ne "$default_host" ]; then
+                echo -e "${YELLOW}  ⚠ ${label}: default node port ${default_host} is occupied${NC}"
+                echo -e "${YELLOW}    ${label}: 默认节点端口 ${default_host} 已被占用${NC}"
+            fi
+
+            echo -n "  ${label} node/API port / 节点/API 端口 [${suggested_port}]: "
+            read -r user_port </dev/tty
+            user_port="${user_port:-$suggested_port}"
+
+            while ! echo "$user_port" | grep -qE '^[0-9]+$' || [ "$user_port" -lt 1 ] || [ "$user_port" -gt 65535 ]; do
+                echo -e "${RED}  Invalid port. Enter 1-65535 / 端口无效，请输入 1-65535${NC}"
+                echo -n "  ${label} node/API port / 节点/API 端口 [${suggested_port}]: "
+                read -r user_port </dev/tty
+                user_port="${user_port:-$suggested_port}"
+            done
+
+            if ! check_port_available "$user_port"; then
+                echo -e "${YELLOW}  ⚠ Port ${user_port} is in use — container may fail to start${NC}"
+                echo -e "${YELLOW}    端口 ${user_port} 已被占用 — 容器可能无法启动${NC}"
+            fi
+
+            echo -e "${GREEN}  ✓ ${label}: node/API port ${user_port}${NC}"
+            add_port_mapping_to_compose "$compose_file" "$user_port" "$container_port" "${label} node/API access (optional)"
+            node_host_ports+=("$user_port")
+            assigned_ports+=("$user_port")
+            idx=$((idx + 1))
+        done
+        echo -e "${YELLOW}  🔒 Open only behind firewall/VPN/reverse proxy with authentication.${NC}"
+        echo -e "${YELLOW}     请仅在防火墙/VPN/反向代理认证保护下开放这些端口。${NC}"
+    else
+        echo -e "${GREEN}  ✓ Node/API ports remain internal-only / 节点/API 端口保持容器内部访问${NC}"
+    fi
+
     # Configuration confirmation summary
     echo ""
     echo -e "${CYAN}┌─────────────────────────────────────────────────────────┐${NC}"
@@ -602,6 +688,12 @@ docker_install_core() {
     for hp in "${host_ports[@]}"; do
         local label="${DP_PORT_LABELS[$idx]}"
         box_row "  ${label} port:    ${BOLD}${hp}${NC}"
+        idx=$((idx + 1))
+    done
+    idx=0
+    for hp in "${node_host_ports[@]}"; do
+        local label="${DP_NODE_PORT_LABELS[$idx]}"
+        box_row "  ${label} node: ${BOLD}${hp}${NC}"
         idx=$((idx + 1))
     done
     if [ "$NEED_MIRROR" = true ]; then
@@ -743,6 +835,18 @@ docker_install_core() {
         echo ""
         idx=$((idx + 1))
     done
+    if [ ${#node_host_ports[@]} -gt 0 ]; then
+        echo -e "${CYAN}Node/API access / 节点/API 访问：${NC}"
+        idx=0
+        for hp in "${node_host_ports[@]}"; do
+            local label="${DP_NODE_PORT_LABELS[$idx]}"
+            echo -e "  ${GREEN}${label}: ${hp}${NC}"
+            idx=$((idx + 1))
+        done
+        echo -e "  ${YELLOW}Ensure firewall/security groups allow only trusted peers.${NC}"
+        echo -e "  ${YELLOW}请确保防火墙/安全组只允许可信节点访问。${NC}"
+        echo ""
+    fi
 
     # Data volume paths
     local vol_base="/var/lib/docker/volumes"
