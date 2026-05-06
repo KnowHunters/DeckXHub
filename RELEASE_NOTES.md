@@ -1,11 +1,10 @@
 ﻿## What's Changed
 
-### 🐛 Bug Fixes
+### ✨ New Features
 
-- repair DeckXHub runtime startup
-- smarter health-check wait (15min, all-port, exit detect)
+- add optional node port mapping
 
 ---
-**Full Changelog**: [v0.0.2...v0.0.3](https://github.com/KnowHunters/DeckXHub/compare/v0.0.2...v0.0.3)
+**Full Changelog**: [v0.0.3...v0.0.4](https://github.com/KnowHunters/DeckXHub/compare/v0.0.3...v0.0.4)
 
 
