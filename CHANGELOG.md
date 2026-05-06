@@ -97,6 +97,7 @@ _2026-05-06_
 
 ### 🐛 Bug Fixes
 
+- keep openclaw peer symlink scanner-safe
 - symlink openclaw into plugin node_modules for import resolution
 
 ---
