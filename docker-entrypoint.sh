@@ -110,6 +110,29 @@ start_openclaw_gateway() {
         export OPENCLAW_BIN=/usr/local/bin/openclaw
     fi
 
+    # Ensure plugins can resolve `import 'openclaw/plugin-sdk/...'`.
+    # OpenClaw lives at /opt/openclaw (or runtime overlay) but plugins are
+    # installed under NPM_CONFIG_PREFIX or OPENCLAW_STATE_DIR/npm — without
+    # a symlink Node.js cannot resolve the bare 'openclaw' specifier.
+    local oc_source="/opt/openclaw"
+    if [ -f /data/runtime/openclaw/package.json ]; then
+        oc_source="/data/runtime/openclaw"
+    fi
+    if [ -d "$oc_source" ]; then
+        local nm_dir
+        for nm_dir in \
+            "${NPM_CONFIG_PREFIX:-/data/openclaw/npm}/lib/node_modules" \
+            "${NPM_CONFIG_PREFIX:-/data/openclaw/npm}/node_modules" \
+            "/data/openclaw/state/npm/node_modules" \
+            "/data/openclaw/state/npm/lib/node_modules"; do
+            mkdir -p "$nm_dir"
+            if [ ! -e "$nm_dir/openclaw" ]; then
+                ln -sfn "$oc_source" "$nm_dir/openclaw" || true
+            fi
+        done
+        echo "[DeckXHub] Linked openclaw package into plugin node_modules ($oc_source)"
+    fi
+
     local config_path="${OPENCLAW_CONFIG_PATH:-/data/openclaw/state/openclaw.json}"
     if [ ! -f "$config_path" ]; then
         echo "[DeckXHub] Creating default OpenClaw config at $config_path"
