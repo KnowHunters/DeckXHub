@@ -112,19 +112,20 @@ start_openclaw_gateway() {
 
     # Ensure plugins can resolve `import 'openclaw/plugin-sdk/...'`.
     # OpenClaw lives at /opt/openclaw (or runtime overlay) but plugins are
-    # installed under NPM_CONFIG_PREFIX or OPENCLAW_STATE_DIR/npm — without
-    # a symlink Node.js cannot resolve the bare 'openclaw' specifier.
+    # installed under NPM_CONFIG_PREFIX or OPENCLAW_STATE_DIR/npm. The OpenClaw
+    # installer security scan only permits the exact node_modules/openclaw peer
+    # symlink shape, so do not create lib/node_modules/openclaw.
     local oc_source="/opt/openclaw"
     if [ -f /data/runtime/openclaw/package.json ]; then
         oc_source="/data/runtime/openclaw"
     fi
     if [ -d "$oc_source" ]; then
+        rm -f "${NPM_CONFIG_PREFIX:-/data/openclaw/npm}/lib/node_modules/openclaw" \
+              "/data/openclaw/state/npm/lib/node_modules/openclaw" 2>/dev/null || true
         local nm_dir
         for nm_dir in \
-            "${NPM_CONFIG_PREFIX:-/data/openclaw/npm}/lib/node_modules" \
             "${NPM_CONFIG_PREFIX:-/data/openclaw/npm}/node_modules" \
-            "/data/openclaw/state/npm/node_modules" \
-            "/data/openclaw/state/npm/lib/node_modules"; do
+            "/data/openclaw/state/npm/node_modules"; do
             mkdir -p "$nm_dir"
             if [ ! -e "$nm_dir/openclaw" ]; then
                 ln -sfn "$oc_source" "$nm_dir/openclaw" || true
